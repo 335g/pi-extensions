@@ -1,6 +1,6 @@
 {
   "name": "@335g/pi-answer",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Extract questions from the last assistant message and answer them in an interactive Q&A TUI.",
   "type": "module",
   "keywords": [
@@ -27,6 +27,8 @@
     "@earendil-works/pi-tui": "*"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }

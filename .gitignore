@@ -1,6 +1,9 @@
-*
+/*
 
 !.gitignore
 !LICENSE
 !package.json
 !package-lock.json
+!packages/
+
+node_modules/

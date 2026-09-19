@@ -10,5 +10,6 @@ under `packages/` is published separately as `@335g/pi-<name>`.
 | Package | What it does |
 |---------|--------------|
 | [pi-answer](./packages/pi-answer/) | Extracts questions from an assistant message and answers them in an interactive Q&A TUI. Optional argument selects how far back to look (`/answer 2`). |
+| [pi-byetheway](./packages/pi-byetheway/) | Side conversation space (`/btw`) that reads the session context without writing to it, plus an explicit hand-off back to the session (`ctrl+p`). |
 
 Installation and usage are documented in each package's README.

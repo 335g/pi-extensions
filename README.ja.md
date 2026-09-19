@@ -9,5 +9,6 @@
 | パッケージ | 内容 |
 |------------|------|
 | [pi-answer](./packages/pi-answer/) | アシスタントメッセージから質問を抽出し、対話的な Q&A 画面で回答する。任意の引数で遡る数を指定できる（`/answer 2`）。 |
+| [pi-byetheway](./packages/pi-byetheway/) | セッションの内容を踏まえて質問できるが、やりとりを残さないスペース（`/btw`）。`ctrl+p` で明示的に本体セッションへ渡せる。 |
 
-インストール方法と使い方は各パッケージの README に書く（[pi-answer 日本語版](./packages/pi-answer/README.ja.md)）。
+インストール方法と使い方は各パッケージの README に書く（[pi-answer 日本語版](./packages/pi-answer/README.ja.md)、[pi-byetheway 日本語版](./packages/pi-byetheway/README.ja.md)）。

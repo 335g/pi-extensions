@@ -6,4 +6,9 @@
 !package-lock.json
 !packages/
 
+# 全階層で除外（/* は直下しか見ないため、機密になりうるものは明示）
 node_modules/
+.env
+.env.*
+.envrc
+.DS_Store

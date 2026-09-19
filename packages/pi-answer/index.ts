@@ -104,7 +104,8 @@ interface Messages {
 	noModel: string;
 	modelUnavailable(configured: string, fallback: string): string;
 	incomplete(reason: string): string;
-	noAssistantMessages: string;
+	noAssistantMessages(depth: number): string;
+	invalidDepth(arg: string): string;
 	cancelled: string;
 	extractionFailed(message: string): string;
 	extractionFailedGeneric: string;
@@ -133,12 +134,17 @@ const MESSAGES: Record<AnswerLanguage, Messages> = {
 		modelUnavailable: (configured, fallback) =>
 			`pi-answer.json model "${configured}" is not available; using ${fallback}`,
 		incomplete: (reason) => `Last assistant message incomplete (${reason})`,
-		noAssistantMessages: "No assistant messages found",
+		noAssistantMessages: (depth) =>
+			depth === 1
+				? "No assistant messages found"
+				: `Cannot go back ${depth - 1} assistant message(s): not enough messages`,
+		invalidDepth: (arg) =>
+			`Invalid argument "${arg}": /answer [steps] where steps is an integer >= 1 (1 = last assistant message)`,
 		cancelled: "Cancelled",
 		extractionFailed: (message) => `Question extraction failed: ${message}`,
 		extractionFailedGeneric: "question extraction failed",
 		extractionInvalidJson: "question extraction returned invalid JSON",
-		noQuestions: "No questions found in the last message",
+		noQuestions: "No questions found in the message",
 		noAnswersToSubmit: "No answers to submit",
 		titleQuestions: (page, total) => `Questions (${page}/${total})`,
 		titleReview: (answered, total) => `Review (${answered}/${total} answered)`,
@@ -161,12 +167,17 @@ const MESSAGES: Record<AnswerLanguage, Messages> = {
 		modelUnavailable: (configured, fallback) =>
 			`pi-answer.json の model "${configured}" が見つかりません。${fallback} を使います`,
 		incomplete: (reason) => `最後のアシスタントメッセージが未完です (${reason})`,
-		noAssistantMessages: "アシスタントのメッセージが見つかりません",
+		noAssistantMessages: (depth) =>
+			depth === 1
+				? "アシスタントのメッセージが見つかりません"
+				: `${depth - 1} 個前のアシスタントメッセージまで遡れません。メッセージが足りません`,
+		invalidDepth: (arg) =>
+			`引数 "${arg}" が不正です。使い方: /answer [遡る数]（1 以上の整数、1 = 直近のアシスタントメッセージ）`,
 		cancelled: "キャンセルしました",
 		extractionFailed: (message) => `質問の抽出に失敗しました: ${message}`,
 		extractionFailedGeneric: "質問の抽出に失敗しました",
 		extractionInvalidJson: "抽出結果の JSON が不正です",
-		noQuestions: "最後のメッセージに質問はありません",
+		noQuestions: "メッセージに質問はありません",
 		noAnswersToSubmit: "送信する回答がありません",
 		titleQuestions: (page, total) => `質問 (${page}/${total})`,
 		titleReview: (answered, total) => `確認 (${answered}/${total} 回答済み)`,
@@ -650,7 +661,8 @@ class QnAComponent implements Component, Focusable {
 	}
 }
 
-async function answerHandler(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+/** `depth` = which assistant message to read, counting back from the newest (1 = the last one). */
+async function answerHandler(pi: ExtensionAPI, ctx: ExtensionContext, depth = 1): Promise<void> {
 	const config = readConfig(ctx);
 	const messages = MESSAGES[resolveLanguage(config)];
 	if (ctx.mode !== "tui") {
@@ -664,30 +676,29 @@ async function answerHandler(pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 	}
 
 	const branch = ctx.sessionManager.getBranch();
-	let lastAssistantText: string | undefined;
+	const candidates: { text: string; stopReason: string }[] = [];
 
-	for (let i = branch.length - 1; i >= 0; i--) {
+	for (let i = branch.length - 1; i >= 0 && candidates.length < depth; i--) {
 		const entry = branch[i];
 		if (entry.type !== "message") continue;
 		const msg = entry.message;
 		if (!("role" in msg) || msg.role !== "assistant") continue;
-		if (msg.stopReason !== "stop") {
-			ctx.ui.notify(messages.incomplete(msg.stopReason), "error");
-			return;
-		}
 		const textParts = msg.content
 			.filter((c): c is { type: "text"; text: string } => c.type === "text")
 			.map((c) => c.text);
-		if (textParts.length > 0) {
-			lastAssistantText = textParts.join("\n");
-			break;
-		}
+		if (textParts.length > 0) candidates.push({ text: textParts.join("\n"), stopReason: msg.stopReason });
 	}
 
-	if (!lastAssistantText) {
-		ctx.ui.notify(messages.noAssistantMessages, "error");
+	const target = candidates[depth - 1];
+	if (!target) {
+		ctx.ui.notify(messages.noAssistantMessages(depth), "error");
 		return;
 	}
+	if (target.stopReason !== "stop") {
+		ctx.ui.notify(messages.incomplete(target.stopReason), "error");
+		return;
+	}
+	const lastAssistantText = target.text;
 
 	// Use the configured extraction model, else the session's current model.
 	const extractionModel = resolveModel(ctx, config, messages, sessionModel);
@@ -699,7 +710,7 @@ async function answerHandler(pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 		const doExtract = async (): Promise<ExtractionOutcome> => {
 			const userMessage: UserMessage = {
 				role: "user",
-				content: [{ type: "text", text: lastAssistantText! }],
+				content: [{ type: "text", text: lastAssistantText }],
 				timestamp: Date.now(),
 			};
 			const sessionId = ctx.sessionManager.getSessionId();
@@ -779,15 +790,20 @@ async function answerHandler(pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 }
 
 export default function (pi: ExtensionAPI) {
-	const handler = (ctx: ExtensionContext) => answerHandler(pi, ctx);
-
 	pi.registerCommand("answer", {
-		description: "Extract questions from last assistant message into interactive Q&A",
-		handler: (_args, ctx) => handler(ctx),
+		description: "Extract questions from an assistant message into interactive Q&A (default: the last one)",
+		handler: async (args, ctx) => {
+			const trimmed = args.trim();
+			if (trimmed !== "" && !/^[1-9]\d*$/.test(trimmed)) {
+				ctx.ui.notify(MESSAGES[resolveLanguage(readConfig(ctx))].invalidDepth(trimmed), "error");
+				return;
+			}
+			return answerHandler(pi, ctx, trimmed === "" ? 1 : Number(trimmed));
+		},
 	});
 
 	pi.registerShortcut("ctrl+.", {
 		description: "Extract and answer questions",
-		handler,
+		handler: (ctx) => answerHandler(pi, ctx),
 	});
 }

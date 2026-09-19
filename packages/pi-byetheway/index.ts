@@ -65,12 +65,13 @@ type StreamFunction = (
 /**
  * `ModelRegistry` only exposes `complete()`, but it wraps the runtime that owns
  * `stream()`. Read it off the facade; fall back to `complete()` when absent.
+ *
+ * `ModelRuntime.stream` calls `this.prepareRequest`, so the receiver must be kept.
  */
-function runtimeStream(registry: unknown): StreamFunction | undefined {
+export function runtimeStream(registry: unknown): StreamFunction | undefined {
 	const runtime = (registry as { runtime?: { stream?: StreamFunction } }).runtime;
 	if (!runtime || typeof runtime.stream !== "function") return undefined;
-	const stream = runtime.stream;
-	return (model, context, options) => stream(model, context, options);
+	return (model, context, options) => runtime.stream!(model, context, options);
 }
 
 function isOpencodeHost(baseUrl: string): boolean {

@@ -12,9 +12,22 @@ import type { AssistantMessage, Message, UserMessage } from "@earendil-works/pi-
 
 export type Turn = { question: string; answer: string };
 
+/**
+ * Whether the turn says anything in prose. Assistant turns that do not exist
+ * only to carry tool calls, and their calls are dropped with the marker.
+ */
+function hasProse(message: Message): boolean {
+	const content = message.content;
+	if (typeof content === "string") return content.trim().length > 0;
+	return content.some((block) => block.type === "text" && block.text.trim().length > 0);
+}
+
 export function sanitize(messages: Message[]): Message[] {
 	const out: Message[] = [];
 	for (const message of messages) {
+		// Keeping these would leave a `[bash]` line per tool call in the record,
+		// which reads as an example of the assistant answering with a tool call.
+		if (message.role === "assistant" && !hasProse(message)) continue;
 		const text = textOf(message);
 		if (!text) continue;
 		const role = message.role === "assistant" ? "assistant" : "user";
@@ -110,25 +123,34 @@ export function demo(): void {
 	] as unknown as Message[];
 
 	const out = sanitize(messages);
-	if (out.length !== 4) throw new Error(`expected 4 messages, got ${out.length}`);
+	if (out.length !== 2) throw new Error(`expected 2 messages, got ${out.length}`);
 	const roles = out.map((message) => message.role).join(",");
-	if (roles !== "user,assistant,user,assistant") throw new Error(`unexpected roles: ${roles}`);
+	if (roles !== "user,assistant") throw new Error(`unexpected roles: ${roles}`);
 
 	const first = JSON.stringify(out[0].content);
-	for (const needle of ["hello", "(画像は省略)"]) {
+	for (const needle of ["hello", "(画像は省略)", "[read の出力]", "file contents", "second"]) {
 		if (!first.includes(needle)) throw new Error(`first message is missing ${needle}: ${first}`);
 	}
-	// The tool call survives as a marker, so its result stays in its own turn.
-	if (!JSON.stringify(out[1].content).includes("[read]")) throw new Error("tool call marker was dropped");
-	const third = JSON.stringify(out[2].content);
-	for (const needle of ["[read の出力]", "file contents", "second"]) {
-		if (!third.includes(needle)) throw new Error(`tool result turn is missing ${needle}: ${third}`);
-	}
-	if (JSON.stringify(out[3].content) !== JSON.stringify([{ type: "text", text: "answer" }])) {
-		throw new Error(`unexpected assistant content: ${JSON.stringify(out[3].content)}`);
+	// The call-only turn is dropped, so its marker must not survive as a line of its own.
+	if (first.includes("[read]")) throw new Error("a tool marker from a call-only turn survived");
+	if (JSON.stringify(out[1].content) !== JSON.stringify([{ type: "text", text: "answer" }])) {
+		throw new Error(`unexpected assistant content: ${JSON.stringify(out[1].content)}`);
 	}
 	// Metadata carried by the original assistant message must survive the rewrite.
-	if ((out[3] as unknown as { model?: string }).model !== "m") throw new Error("assistant metadata was dropped");
+	if ((out[1] as unknown as { model?: string }).model !== "m") throw new Error("assistant metadata was dropped");
+
+	// A turn with prose keeps its tool markers, so the calls stay attached to it.
+	const mixed = sanitize([
+		{
+			role: "assistant",
+			content: [
+				{ type: "text", text: "調べます" },
+				{ type: "toolCall", id: "1", name: "bash", arguments: {} },
+			],
+			timestamp: 1,
+		} as unknown as Message,
+	]);
+	if (!JSON.stringify(mixed[0].content).includes("[bash]")) throw new Error("a mixed turn lost its tool marker");
 
 	if (textOf({ role: "assistant", content: [{ type: "text", text: "  " }] } as unknown as Message) !== "") {
 		throw new Error("blank assistant turns must be dropped");

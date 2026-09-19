@@ -1,14 +1,19 @@
-/*
+# 基本方針: 全階層ですべて無視し、追跡したいものだけこの下に追記する。
+*
 
+# ディレクトリを辿れるようにする（これが無いと下の ! が効かない）
+!*/
+
+# 追跡するもの（必要になったら追記）
+# ディレクトリ丸ごと許可する場合は !packages/*/src/** のように ** を付ける
 !.gitignore
 !LICENSE
 !package.json
 !package-lock.json
-!packages/
+!packages/*/LICENSE
+!packages/*/README.md
+!packages/*/package.json
+!packages/*/index.ts
 
-# 全階層で除外（/* は直下しか見ないため、機密になりうるものは明示）
+# 何があっても追跡しないもの（node_modules は走査コスト削減も兼ねる）
 node_modules/
-.env
-.env.*
-.envrc
-.DS_Store

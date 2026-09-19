@@ -51,10 +51,10 @@ export function textOf(message: Message): string {
 	for (const block of content) {
 		if (block.type === "text") parts.push(block.text.trim());
 		else if (block.type === "image") hasImage = true;
-		else if (block.type === "toolCall" && message.role === "assistant") parts.push(`(${block.name} を実行)`);
+		else if (block.type === "toolCall" && message.role === "assistant") parts.push(`[${block.name}]`);
 	}
 	const text = parts.filter(Boolean).join("\n\n");
-	if (message.role === "toolResult") return `(${message.toolName} の出力)\n${text || "なし"}`;
+	if (message.role === "toolResult") return `[${message.toolName} の出力]\n${text || "なし"}`;
 	if (message.role === "assistant") return text;
 	if (hasImage) return [text, "(画像は省略)"].filter(Boolean).join("\n");
 	return text;
@@ -110,9 +110,9 @@ export function demo(): void {
 		if (!first.includes(needle)) throw new Error(`first message is missing ${needle}: ${first}`);
 	}
 	// The tool call survives as a marker, so its result stays in its own turn.
-	if (!JSON.stringify(out[1].content).includes("(read を実行)")) throw new Error("tool call marker was dropped");
+	if (!JSON.stringify(out[1].content).includes("[read]")) throw new Error("tool call marker was dropped");
 	const third = JSON.stringify(out[2].content);
-	for (const needle of ["(read の出力)", "file contents", "second"]) {
+	for (const needle of ["[read の出力]", "file contents", "second"]) {
 		if (!third.includes(needle)) throw new Error(`tool result turn is missing ${needle}: ${third}`);
 	}
 	if (JSON.stringify(out[3].content) !== JSON.stringify([{ type: "text", text: "answer" }])) {

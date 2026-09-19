@@ -67,8 +67,9 @@ pi install npm:@335g/pi-byetheway
 ## 開発
 
 ```sh
-node packages/pi-byetheway/messages.ts
+node packages/pi-byetheway/selfcheck.ts
 ```
 
-文脈の変換の自己チェックを実行する。ツール呼び出し・結果のテキスト化、画像の除外、同一ロールの結合、
-アシスタントメッセージのメタデータ保持を確認する。
+2つの自己チェックを実行する。文脈の変換（ツール呼び出し・結果のテキスト化、画像の除外、同一ロールの
+結合、アシスタントメッセージのメタデータ保持）と、pi に接する部分（登録されるコマンド・ショートカット・
+イベント、および private な `ModelRuntime.stream` がレシーバを保つこと）。

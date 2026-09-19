@@ -72,8 +72,9 @@ reads someone else's suggestion as your own decision.
 ## Development
 
 ```sh
-node packages/pi-byetheway/messages.ts
+node packages/pi-byetheway/selfcheck.ts
 ```
 
-Runs the self-check for the context projection: tool-call and tool-result flattening, image dropping,
-same-role merging, and assistant metadata preservation.
+Runs both self-checks: the context projection (tool-call and tool-result flattening, image dropping,
+same-role merging, assistant metadata preservation) and the pi-facing surface (registered command/
+shortcut/event, and that the private `ModelRuntime.stream` keeps its receiver).

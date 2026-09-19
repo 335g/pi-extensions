@@ -434,6 +434,7 @@ class BtwComponent implements Component, Focusable {
 		this.error = undefined;
 		this.status = undefined;
 		this.instruction = "";
+		this.scroll = 0;
 		this.instructionEditor!.setText("");
 		this.applyFocus();
 		this.requestRender();
@@ -445,6 +446,7 @@ class BtwComponent implements Component, Focusable {
 		this.phase = "formatting";
 		this.promoted = "";
 		this.error = undefined;
+		this.scroll = 0;
 		this.applyFocus();
 		this.requestRender();
 
@@ -578,6 +580,7 @@ class BtwComponent implements Component, Focusable {
 		if (data === "5") {
 			this.promoted = transcriptOf(this.turns);
 			this.mode = "preview";
+			this.scroll = 0;
 			this.previewEditor!.setText(this.promoted);
 			this.applyFocus();
 			this.requestRender();

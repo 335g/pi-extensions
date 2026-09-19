@@ -57,7 +57,7 @@ reads someone else's suggestion as your own decision.
 - The main agent's context is untouched until you press `Enter` in the preview.
 - The btw request carries the messages the main agent would have sent (the session branch with compaction applied),
   plus the exchange so far. It carries **no tool definitions**, so tool calls and results are flattened to text:
-  a tool call becomes `(read を実行)`, a result becomes `(read の出力) ...`. Images are replaced with `(画像は省略)`.
+  a tool call becomes `[read]`, a result becomes `[read の出力] ...`. Images are replaced with `(画像は省略)`.
 - Because that prefix is identical to the main session's, providers with prefix caching usually charge the
   context at the cached rate. A long uncompacted session still means a large request per turn.
 
@@ -65,6 +65,9 @@ reads someone else's suggestion as your own decision.
 
 - The btw agent cannot read files or run commands; it only reasons over the session context. Read-only tools
   (`read`, `grep`, `find`, `ls`) are the planned next step.
+- Because the session transcript contains tool calls, a model can try to call a tool even though none are offered.
+  The btw system prompt forbids that explicitly. When a reply comes back empty (the usual symptom of a refused
+  tool call), the panel reports it as an error and puts the question back in the input.
 - The context is a snapshot taken when `/btw` opens. Work done in the main session after that is not included.
   Reopening the space after a stash keeps the same snapshot.
 - A stashed space is dropped when the session is replaced.

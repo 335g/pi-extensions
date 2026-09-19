@@ -5,7 +5,7 @@
 A side conversation space that reads the session context and never writes to it.
 Run `/btw` mid-session, ask about what you have done so far, and close it without
 leaving a trace in the session or in the agent's context. When you *do* want the
-conclusion to survive, `ctrl+p` reformats the exchange into one message and sends
+conclusion to survive, `ctrl+n` reformats the exchange into one message and sends
 that to the main session.
 
 ## Install
@@ -30,23 +30,22 @@ Keys:
 | `Shift+Enter` | newline |
 | `Esc` | stash the space and return to the main editor (state is kept) |
 | `ctrl+d` | close and discard (asks first when there is anything to lose) |
-| `ctrl+p` | hand the exchange to the main session (see below) |
+| `ctrl+n` | hand the exchange to the main session (see below) |
 | `ctrl+u`, `PageUp`, `PageDown`, `Up`/`Down` on an empty input | scroll the history |
 
-These keys only apply while the btw panel has focus. Outside it, pi's own bindings apply, and
-**`ctrl+p` cycles the model** in the main editor. Pressing it there expecting a hand-off silently changes the
-model, which on a metered provider can surface as a `402 Insufficient account funds` from a model you did not mean
-to use. Remap it in `~/.pi/agent/keybindings.json` if that becomes a problem.
+These keys only apply while the btw panel has focus. The hand-off key is `ctrl+n` rather than the more obvious
+`ctrl+p` because **`ctrl+p` cycles the model** in pi's main editor; pressing it there expecting a hand-off would
+silently switch the model. `ctrl+n` is unbound in the main editor, so a stray press does nothing.
 
 While a question is in flight the answer streams in. You can keep typing; `Enter` is ignored until it finishes.
 A failed question is put back into the input so you do not retype it, and the reason
 (provider error, empty answer, interrupted) is shown in the body above the input, not only in the footer.
 
-## Handing the exchange to the session (`ctrl+p`)
+## Handing the exchange to the session (`ctrl+n`)
 
 The point of the space is that nothing leaks into the main session by accident, so the hand-off is explicit:
 
-1. `ctrl+p` asks for a focus.
+1. `ctrl+n` asks for a focus.
 2. `1`-`4` insert a preset (`Conclusion and evidence`, `Decision and reason`, `Open questions`, `Rejected options`).
    You can edit the text or type any other focus instead. Empty means the default focus.
 3. `Enter` rewrites the whole exchange into one message and shows it.

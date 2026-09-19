@@ -3,7 +3,7 @@
  * and never writes to it.
  *
  * The exchange happens in memory only: nothing is appended to the session file,
- * and nothing enters the main agent's context. `ctrl+p` reformats any part of the
+ * and nothing enters the main agent's context. `ctrl+n` reformats any part of the
  * exchange into one message and hands that message to the main session.
  */
 
@@ -179,7 +179,7 @@ const JA: Strings = {
 	title: "btw",
 	context: (count, model) => `文脈 ${count} 件 · ${model}`,
 	above: (lines) => `↑ ${lines} 行`,
-	chatKeys: "Enter 送信 · Shift+Enter 改行 · Esc 退避 · ctrl+p 本体へ送る · ctrl+d 終了",
+	chatKeys: "Enter 送信 · Shift+Enter 改行 · Esc 退避 · ctrl+n 本体へ送る · ctrl+d 終了",
 	promoteKeys: "Enter 整形 · Esc 戻る",
 	previewKeys: "Enter 送信 · Esc 戻る · ctrl+r 整形し直す · 本文は編集できます",
 	closeConfirm: "この検討を破棄して閉じますか？",
@@ -223,7 +223,7 @@ const EN: Strings = {
 	title: "btw",
 	context: (count, model) => `${count} context messages · ${model}`,
 	above: (lines) => `↑ ${lines} lines`,
-	chatKeys: "Enter send · Shift+Enter newline · Esc stash · ctrl+p send to session · ctrl+d close",
+	chatKeys: "Enter send · Shift+Enter newline · Esc stash · ctrl+n send to session · ctrl+d close",
 	promoteKeys: "Enter format · Esc back",
 	previewKeys: "Enter send · Esc back · ctrl+r reformat · the body is editable",
 	closeConfirm: "Discard this side conversation?",
@@ -519,7 +519,9 @@ class BtwComponent implements Component, Focusable {
 			return;
 		}
 
-		if (matchesKey(data, Key.ctrl("p"))) {
+		// ctrl+p would collide with pi's model cycling in the main editor; ctrl+n is
+		// unbound there, so a stray press has no effect.
+		if (matchesKey(data, Key.ctrl("n"))) {
 			if (this.mode === "chat" && !this.isBusy()) this.startPromote();
 			return;
 		}

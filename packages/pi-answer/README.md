@@ -7,7 +7,8 @@ Port of [mitsuhiko/agent-stuff `answer.ts`](https://github.com/mitsuhiko/agent-s
 ## Usage
 
 - `/answer` — extract questions from the last assistant message
-- `ctrl+.` — same
+- `/answer 2` — extract from the assistant message before that (`3`, `4`, ... go further back)
+- `ctrl+.` — same as `/answer`
 
 Flow: questions are extracted with the configured extraction model (the session model by default), shown one at a time in
 a box, followed by a free-space step for notes, then reviewed as a whole, then submitted as one message that triggers a

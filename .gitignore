@@ -10,10 +10,10 @@
 !LICENSE
 !package.json
 !package-lock.json
-!packages/*/LICENSE
-!packages/*/README.md
-!packages/*/package.json
-!packages/*/index.ts
+!packages/pi-answer/**
 
-# 何があっても追跡しないもの（node_modules は走査コスト削減も兼ねる）
+# 何があっても追跡しないもの（許可ツリーの中でも効かせるため、! より下に置く）
 node_modules/
+.env
+.env.*
+.envrc

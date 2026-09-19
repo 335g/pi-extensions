@@ -8,10 +8,11 @@
 # ディレクトリ丸ごと許可する場合は !packages/*/src/** のように ** を付ける
 !.gitignore
 !LICENSE
+!README.*
 !package.json
 !package-lock.json
 !packages/pi-answer/**
-!README.*
+!packages/pi-byetheway/**
 
 # 何があっても追跡しないもの（許可ツリーの中でも効かせるため、! より下に置く）
 node_modules/

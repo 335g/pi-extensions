@@ -1,5 +1,7 @@
 # pi-answer
 
+[日本語](./README.ja.md)
+
 Extract questions from the last assistant message and answer them in an interactive Q&A TUI.
 
 Port of [mitsuhiko/agent-stuff `answer.ts`](https://github.com/mitsuhiko/agent-stuff/blob/main/extensions/answer.ts).

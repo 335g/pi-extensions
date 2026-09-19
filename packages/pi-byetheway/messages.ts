@@ -73,6 +73,15 @@ export function transcriptOf(turns: Turn[]): string {
 	return turns.map((turn, index) => `Q${index + 1}: ${turn.question}\nA${index + 1}: ${turn.answer}`).join("\n\n");
 }
 
+/**
+ * Whether a reply is usable. An answer that is nothing but a tool marker means
+ * the model tried to call a tool it was not offered, and the turn is a dead end.
+ */
+export function hasAnswer(text: string): boolean {
+	const trimmed = text.trim();
+	return trimmed.length > 0 && !/^\[[a-z_][a-z0-9_-]{0,30}( の出力)?\]$/.test(trimmed);
+}
+
 // ---------------------------------------------------------------- self-check
 
 export function demo(): void {
@@ -128,4 +137,13 @@ export function demo(): void {
 		throw new Error("a turn with no readable text must be dropped");
 	}
 	if (transcriptOf([{ question: "q", answer: "a" }]) !== "Q1: q\nA1: a") throw new Error("bad transcript");
+
+	if (!hasAnswer("ふつうの回答")) throw new Error("prose must count as an answer");
+	if (hasAnswer("   ")) throw new Error("blank must not count as an answer");
+	for (const marker of ["[bash]", "[read の出力]", "  [grep-search]  "]) {
+		if (hasAnswer(marker)) throw new Error(`${marker} must not count as an answer`);
+	}
+	for (const prose of ["[重要] ここが問題です", "[bash] と思われる"]) {
+		if (!hasAnswer(prose)) throw new Error(`${prose} must count as an answer`);
+	}
 }

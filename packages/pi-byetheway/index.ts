@@ -40,7 +40,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 
-import { assistantTurn, sanitize, transcriptOf, userTurn, type Turn } from "./messages.ts";
+import { assistantTurn, hasAnswer, sanitize, transcriptOf, userTurn, type Turn } from "./messages.ts";
 
 // ---------------------------------------------------------------- session context
 
@@ -410,7 +410,7 @@ class BtwComponent implements Component, Focusable {
 		this.abort = undefined;
 		this.phase = "idle";
 		this.invalidate();
-		if (result.status === "ok" && result.text.trim()) {
+		if (result.status === "ok" && hasAnswer(result.text)) {
 			this.turns.push({ question, answer: result.text });
 			this.answer = "";
 		} else {
@@ -458,7 +458,7 @@ class BtwComponent implements Component, Focusable {
 
 		this.abort = undefined;
 		this.phase = "idle";
-		if (result.status === "ok" && result.text.trim()) {
+		if (result.status === "ok" && hasAnswer(result.text)) {
 			this.promoted = result.text;
 			this.mode = "preview";
 			this.previewEditor!.setText(result.text);

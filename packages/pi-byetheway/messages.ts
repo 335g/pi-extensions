@@ -75,7 +75,7 @@ export function transcriptOf(turns: Turn[]): string {
 
 // ---------------------------------------------------------------- self-check
 
-function demo(): void {
+export function demo(): void {
 	const messages = [
 		{ role: "user", content: [{ type: "text", text: "hello" }, { type: "image", data: "x", mimeType: "image/png" }], timestamp: 1 },
 		{
@@ -128,8 +128,4 @@ function demo(): void {
 		throw new Error("a turn with no readable text must be dropped");
 	}
 	if (transcriptOf([{ question: "q", answer: "a" }]) !== "Q1: q\nA1: a") throw new Error("bad transcript");
-
-	console.log("pi-byetheway messages: ok");
 }
-
-if (process.argv[1]?.endsWith("messages.ts")) demo();

@@ -33,8 +33,14 @@ Keys:
 | `ctrl+p` | hand the exchange to the main session (see below) |
 | `ctrl+u`, `PageUp`, `PageDown`, `Up`/`Down` on an empty input | scroll the history |
 
+These keys only apply while the btw panel has focus. Outside it, pi's own bindings apply, and
+**`ctrl+p` cycles the model** in the main editor. Pressing it there expecting a hand-off silently changes the
+model, which on a metered provider can surface as a `402 Insufficient account funds` from a model you did not mean
+to use. Remap it in `~/.pi/agent/keybindings.json` if that becomes a problem.
+
 While a question is in flight the answer streams in. You can keep typing; `Enter` is ignored until it finishes.
-A failed question is put back into the input so you do not retype it.
+A failed question is put back into the input so you do not retype it, and the reason
+(provider error, empty answer, interrupted) is shown in the body above the input, not only in the footer.
 
 ## Handing the exchange to the session (`ctrl+p`)
 

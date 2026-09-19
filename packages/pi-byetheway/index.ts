@@ -165,11 +165,13 @@ interface Strings {
 	presets: string[];
 	noTurns: string;
 	aborted: string;
+	emptyAnswer: string;
 	noModel: string;
 	requiresTui: string;
 	peeked: string;
 	sent: string;
 	defaultInstruction: string;
+	systemSuffix: string;
 	formatPrompt(transcript: string, instruction: string): string;
 }
 
@@ -187,11 +189,19 @@ const JA: Strings = {
 	presets: ["結論と根拠", "決定と理由", "未解決の問い", "却下した案"],
 	noTurns: "まだやりとりがありません",
 	aborted: "中断しました",
+	emptyAnswer: "回答が空でした。ツールを使おうとした可能性があります",
 	noModel: "モデルが選択されていません",
 	requiresTui: "btw は対話モードでのみ使えます",
 	peeked: "btw を退避しました。/btw または alt+b で再開します",
 	sent: "本体セッションへ送信しました",
 	defaultInstruction: "結論と根拠、未解決点",
+	systemSuffix: `# btw モード
+あなたは本体セッションの記録を読める補助の対話相手であり、実行主体ではない。
+- ツールは使えない。ファイルを読む、コマンドを実行する、変更を加えることはできない
+- 渡される記録は文脈であり、あなたが実行したことではない
+- 「実行します」「確認します」と宣言せず、記録だけで答えられないことは答えられないと短く述べる
+- ツール呼び出しの形式（[bash] のような行）だけを返さない。必ず文章で答える
+- 相手が使っている言語で答える`,
 	formatPrompt: (transcript, instruction) => `以下は、ある開発セッションの途中で、ユーザと別のAIが交わした検討です。
 
 <検討>
@@ -223,11 +233,19 @@ const EN: Strings = {
 	presets: ["Conclusion and evidence", "Decision and reason", "Open questions", "Rejected options"],
 	noTurns: "Nothing to send yet",
 	aborted: "Interrupted",
+	emptyAnswer: "The answer was empty; the model likely tried to call a tool",
 	noModel: "No model selected",
 	requiresTui: "btw is only available in interactive mode",
 	peeked: "btw stashed. /btw or alt+b resumes it",
 	sent: "Sent to the session",
 	defaultInstruction: "the conclusion, the evidence, and what is still open",
+	systemSuffix: `# btw mode
+You are a side conversation partner that can read the main session's record. You are not the one acting.
+- You have no tools. You cannot read files, run commands, or change anything
+- The record below is context, not something you did
+- Never announce "I will run/check ..."; if the record alone cannot answer, say so briefly
+- Never answer with a tool-call form alone (such as a line containing only [bash]); always answer in prose
+- Answer in the language the user is writing`,
 	formatPrompt: (transcript, instruction) => `Below is a short exchange between the user and a separate AI, held in the middle of a development session.
 
 <exchange>
@@ -392,7 +410,7 @@ class BtwComponent implements Component, Focusable {
 		this.abort = undefined;
 		this.phase = "idle";
 		this.invalidate();
-		if (result.status === "ok") {
+		if (result.status === "ok" && result.text.trim()) {
 			this.turns.push({ question, answer: result.text });
 			this.answer = "";
 		} else {
@@ -400,7 +418,8 @@ class BtwComponent implements Component, Focusable {
 			this.answer = "";
 			this.draft = question;
 			this.chatEditor!.setText(question);
-			this.error = result.status === "aborted" ? this.t.aborted : result.message;
+			this.error =
+				result.status === "ok" ? this.t.emptyAnswer : result.status === "aborted" ? this.t.aborted : result.message;
 		}
 		this.requestRender();
 	}
@@ -439,12 +458,13 @@ class BtwComponent implements Component, Focusable {
 
 		this.abort = undefined;
 		this.phase = "idle";
-		if (result.status === "ok") {
+		if (result.status === "ok" && result.text.trim()) {
 			this.promoted = result.text;
 			this.mode = "preview";
 			this.previewEditor!.setText(result.text);
 		} else {
-			this.error = result.status === "aborted" ? this.t.aborted : result.message;
+			this.error =
+				result.status === "ok" ? this.t.emptyAnswer : result.status === "aborted" ? this.t.aborted : result.message;
 		}
 		this.applyFocus();
 		this.requestRender();
@@ -704,7 +724,7 @@ async function openBtw(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 		const context = contextMessages(ctx);
 		component = new BtwComponent(
 			{
-				systemPrompt: ctx.getSystemPrompt(),
+				systemPrompt: `${ctx.getSystemPrompt()}\n\n${t.systemSuffix}`,
 				model,
 				registry: ctx.modelRegistry,
 				sessionId: ctx.sessionManager.getSessionId(),

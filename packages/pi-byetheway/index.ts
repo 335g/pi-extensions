@@ -646,13 +646,26 @@ class BtwComponent implements Component, Focusable {
 		this.lastEditorHeight = editorLines.length;
 		const bodyHeight = this.bodyHeight();
 		const history = this.historyLines(this.contentWidth());
-		const maxScroll = Math.max(0, history.length - bodyHeight);
+
+		// A failure has to be impossible to miss: the reply never arrives, so the
+		// body is the only place the user is looking.
+		const notice = this.error
+			? this.theme.fg("error", this.error)
+			: this.status
+				? this.theme.fg("success", this.status)
+				: undefined;
+		const noticeLines = notice ? wrapTextWithAnsi(notice, this.contentWidth()) : [];
+		const historyHeight = Math.max(1, bodyHeight - noticeLines.length);
+
+		const maxScroll = Math.max(0, history.length - historyHeight);
 		if (this.scroll > maxScroll) this.scroll = maxScroll;
-		const start = Math.max(0, history.length - bodyHeight - this.scroll);
+		const start = Math.max(0, history.length - historyHeight - this.scroll);
 
 		const lines: string[] = [this.headerLine(width, start), this.rule(width)];
-		for (const line of history.slice(start, start + bodyHeight)) lines.push(this.pad(`  ${line}`, width));
-		for (let i = Math.min(bodyHeight, history.length - start); i < bodyHeight; i++) lines.push(" ".repeat(width));
+		const visible = history.slice(start, start + historyHeight);
+		for (const line of visible) lines.push(this.pad(`  ${line}`, width));
+		for (let i = visible.length; i < historyHeight; i++) lines.push(" ".repeat(width));
+		for (const line of noticeLines) lines.push(this.pad(`  ${line}`, width));
 
 		if (this.mode === "promote") {
 			const presetWidth = Math.max(10, Math.floor(width / this.t.presets.length) - 6);
@@ -688,8 +701,6 @@ class BtwComponent implements Component, Focusable {
 		if (this.confirmingClose) {
 			return truncateToWidth(`${this.theme.fg("error", this.t.closeConfirm)}  ${this.theme.fg("dim", this.t.closeKeys)}`, width);
 		}
-		if (this.error) return truncateToWidth(this.theme.fg("error", this.error), width);
-		if (this.status) return truncateToWidth(this.theme.fg("success", this.status), width);
 		const keys = this.mode === "chat" ? this.t.chatKeys : this.mode === "promote" ? this.t.promoteKeys : this.t.previewKeys;
 		return truncateToWidth(this.theme.fg("dim", keys), width);
 	}

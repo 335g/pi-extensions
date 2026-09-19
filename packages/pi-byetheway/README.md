@@ -56,8 +56,11 @@ reads someone else's suggestion as your own decision.
 - Nothing is written to the session file. There are no `appendEntry` calls and no messages.
 - The main agent's context is untouched until you press `Enter` in the preview.
 - The btw request carries the messages the main agent would have sent (the session branch with compaction applied),
-  plus the exchange so far. It carries **no tool definitions**, so tool calls and results are flattened to text:
-  a tool call becomes `[read]`, a result becomes `[read の出力] ...`. Images are replaced with `(画像は省略)`.
+  plus the exchange so far. It carries **no tool definitions**, so the record is flattened to text:
+  a tool result becomes `[read の出力] ...`, and a tool call inside a turn that also has prose becomes `[read]`.
+  A turn that consists of nothing but tool calls is dropped, because keeping it would leave a `[bash]` line per call
+  and read as an example of answering with a tool call. Images are replaced with `(画像は省略)`.
+  On a long session that turns ~250 messages into ~35 without losing any prose.
 - Because that prefix is identical to the main session's, providers with prefix caching usually charge the
   context at the cached rate. A long uncompacted session still means a large request per turn.
 

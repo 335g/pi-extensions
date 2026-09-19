@@ -1,15 +1,25 @@
 {
-  "name": "pi-answer",
+  "name": "@335g/pi-answer",
   "version": "0.0.1",
-  "description": "",
+  "description": "Extract questions from the last assistant message and answer them in an interactive Q&A TUI.",
   "type": "module",
-  "keywords": [],
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "extension"
+  ],
   "author": "Yoshiki Kudo",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https+//github.com/335g/pi-extensions.git",
+    "url": "git+https://github.com/335g/pi-extensions.git",
     "directory": "packages/pi-answer"
+  },
+  "files": [
+    "index.ts"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

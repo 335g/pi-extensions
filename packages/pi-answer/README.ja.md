@@ -4,6 +4,14 @@
 
 [mitsuhiko/agent-stuff の `answer.ts`](https://github.com/mitsuhiko/agent-stuff/blob/main/extensions/answer.ts) の移植。
 
+## インストール
+
+```sh
+pi install npm:@335g/pi-answer
+```
+
+`pi install` はユーザ設定（`~/.pi/agent/settings.json`）に書き込む。プロジェクト設定（`.pi/settings.json`）に書き込むときは `-l` を付ける。
+
 ## 使い方
 
 - `/answer` — 直近のアシスタントメッセージから質問を抽出する

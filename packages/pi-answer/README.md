@@ -6,6 +6,15 @@ Extract questions from the last assistant message and answer them in an interact
 
 Port of [mitsuhiko/agent-stuff `answer.ts`](https://github.com/mitsuhiko/agent-stuff/blob/main/extensions/answer.ts).
 
+## Install
+
+```sh
+pi install npm:@335g/pi-answer
+```
+
+`pi install` writes to the user settings (`~/.pi/agent/settings.json`). Add `-l` to write to the project settings
+(`.pi/settings.json`) instead.
+
 ## Usage
 
 - `/answer` — extract questions from the last assistant message

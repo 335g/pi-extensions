@@ -1,6 +1,6 @@
 {
   "name": "@335g/pi-byetheway",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Side conversation space (/btw) that reads the session context and never writes to it.",
   "type": "module",
   "keywords": [
@@ -16,7 +16,8 @@
     "directory": "packages/pi-byetheway"
   },
   "files": [
-    "index.ts"
+    "index.ts",
+    "messages.ts"
   ],
   "publishConfig": {
     "access": "public"

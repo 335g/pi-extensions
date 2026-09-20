@@ -19,7 +19,8 @@ const pi = {
 
 extension(pi);
 if (commands.join() !== "btw") throw new Error(`unexpected commands: ${commands}`);
-if (shortcuts.join() !== "alt+b") throw new Error(`unexpected shortcuts: ${shortcuts}`);
+// No shortcut is registered: `alt+b` collides with the built-in editor binding for cursorWordLeft.
+if (shortcuts.length > 0) throw new Error(`unexpected shortcuts: ${shortcuts}`);
 if (events.join() !== "session_start") throw new Error(`unexpected events: ${events}`);
 
 // `ModelRuntime.stream` reaches for `this.prepareRequest`; extracting the method

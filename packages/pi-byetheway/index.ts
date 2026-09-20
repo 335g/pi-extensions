@@ -192,7 +192,7 @@ const JA: Strings = {
 	emptyAnswer: "回答が空でした。ツールを使おうとした可能性があります",
 	noModel: "モデルが選択されていません",
 	requiresTui: "btw は対話モードでのみ使えます",
-	peeked: "btw を退避しました。/btw または alt+b で再開します",
+	peeked: "btw を退避しました。/btw で再開します",
 	sent: "本体セッションへ送信しました",
 	defaultInstruction: "結論と根拠、未解決点",
 	systemSuffix: `# btw モード
@@ -236,7 +236,7 @@ const EN: Strings = {
 	emptyAnswer: "The answer was empty; the model likely tried to call a tool",
 	noModel: "No model selected",
 	requiresTui: "btw is only available in interactive mode",
-	peeked: "btw stashed. /btw or alt+b resumes it",
+	peeked: "btw stashed. /btw resumes it",
 	sent: "Sent to the session",
 	defaultInstruction: "the conclusion, the evidence, and what is still open",
 	systemSuffix: `# btw mode
@@ -780,10 +780,5 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("btw", {
 		description: "Side conversation space that reads the session without writing to it",
 		handler: (_args, ctx) => openBtw(pi, ctx),
-	});
-
-	pi.registerShortcut("alt+b", {
-		description: "Resume the stashed btw space",
-		handler: (ctx) => openBtw(pi, ctx),
 	});
 }

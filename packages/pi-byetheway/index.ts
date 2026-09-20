@@ -46,7 +46,7 @@ import { assistantTurn, hasAnswer, sanitize, transcriptOf, userTurn, type Turn }
  * The panel shares the screen with the session transcript it sits on top of: it
  * takes this much of the terminal, so the conversation above stays readable.
  */
-const PANEL_HEIGHT_RATIO = 0.6;
+const PANEL_HEIGHT_RATIO = 0.5;
 
 // ---------------------------------------------------------------- session context
 

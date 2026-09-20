@@ -608,7 +608,8 @@ class BtwComponent implements Component, Focusable {
 
 	private bodyHeight(): number {
 		const hints = this.mode === "promote" ? 2 : 0;
-		return Math.max(3, this.height() - this.lastEditorHeight - hints - 3);
+		// Chrome around the body: two rules, the header, and the footer.
+		return Math.max(3, this.height() - this.lastEditorHeight - hints - 4);
 	}
 
 	private height(): number {
@@ -669,7 +670,7 @@ class BtwComponent implements Component, Focusable {
 		if (this.scroll > maxScroll) this.scroll = maxScroll;
 		const start = Math.max(0, history.length - historyHeight - this.scroll);
 
-		const lines: string[] = [this.headerLine(width, start), this.rule(width)];
+		const lines: string[] = [this.rule(width), this.headerLine(width, start), this.rule(width)];
 		const visible = history.slice(start, start + historyHeight);
 		for (const line of visible) lines.push(this.pad(`  ${line}`, width));
 		for (let i = visible.length; i < historyHeight; i++) lines.push(" ".repeat(width));

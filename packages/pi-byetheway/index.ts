@@ -608,8 +608,8 @@ class BtwComponent implements Component, Focusable {
 
 	private bodyHeight(): number {
 		const hints = this.mode === "promote" ? 2 : 0;
-		// Chrome around the body: two rules, the header, and the footer.
-		return Math.max(3, this.height() - this.lastEditorHeight - hints - 4);
+		// Chrome around the body: two rules, the header, the footer, and the bottom edge.
+		return Math.max(3, this.height() - this.lastEditorHeight - hints - 5);
 	}
 
 	private height(): number {
@@ -672,7 +672,11 @@ class BtwComponent implements Component, Focusable {
 		if (this.scroll > maxScroll) this.scroll = maxScroll;
 		const start = Math.max(0, history.length - historyHeight - this.scroll);
 
-		const lines: string[] = [this.rule(inner, "┌", "┐"), this.frame(`  ${this.headerLine(inner - 2, start)}`, inner), this.rule(inner, "├", "┤")];
+		const lines: string[] = [
+			this.rule(inner, "╭", "╮"),
+			this.frame(`  ${this.headerLine(inner - 2, start)}`, inner),
+			this.rule(inner, "├", "┤"),
+		];
 		const visible = history.slice(start, start + historyHeight);
 		for (const line of visible) lines.push(this.frame(`  ${line}`, inner));
 		for (let i = visible.length; i < historyHeight; i++) lines.push(this.frame("", inner));
@@ -694,6 +698,7 @@ class BtwComponent implements Component, Focusable {
 
 		for (const line of editorLines) lines.push(this.frame(line, inner));
 		lines.push(this.frame(`  ${this.footerLine(inner - 2)}`, inner));
+		lines.push(this.rule(inner, "╰", "╯"));
 		return lines;
 	}
 

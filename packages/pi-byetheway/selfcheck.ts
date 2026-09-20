@@ -53,6 +53,9 @@ const panelLines = panel!.render(columns);
 const widths = new Set(panelLines.map((line) => visibleWidth(line)));
 if (widths.size !== 1 || !widths.has(columns)) throw new Error(`panel lines are not ${columns} wide: ${[...widths]}`);
 if (panelLines.length > rows) throw new Error(`panel is taller than the terminal: ${panelLines.length}`);
+if (!panelLines[0]!.startsWith("╭") || !panelLines.at(-1)!.endsWith("╯")) {
+	throw new Error("panel box is not closed with rounded corners");
+}
 
 // `ModelRuntime.stream` reaches for `this.prepareRequest`; extracting the method
 // would drop the receiver and fail with "cannot read properties of undefined".

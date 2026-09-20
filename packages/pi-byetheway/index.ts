@@ -42,6 +42,12 @@ import {
 
 import { assistantTurn, hasAnswer, sanitize, transcriptOf, userTurn, type Turn } from "./messages.ts";
 
+/**
+ * The panel shares the screen with the session transcript it sits on top of: it
+ * takes this much of the terminal, so the conversation above stays readable.
+ */
+const PANEL_HEIGHT_RATIO = 0.6;
+
 // ---------------------------------------------------------------- session context
 
 /**
@@ -606,7 +612,7 @@ class BtwComponent implements Component, Focusable {
 	}
 
 	private height(): number {
-		return Math.max(12, this.tui.terminal.rows - 6);
+		return Math.max(12, Math.floor(this.tui.terminal.rows * PANEL_HEIGHT_RATIO));
 	}
 
 	private completedLines(width: number): string[] {

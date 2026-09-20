@@ -651,7 +651,9 @@ class BtwComponent implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
-		const editorLines = this.activeEditor().render(width);
+		// One column of gutter on each side, so the panel reads as its own region.
+		const inner = Math.max(8, width - 2);
+		const editorLines = this.activeEditor().render(inner);
 		this.lastEditorHeight = editorLines.length;
 		const bodyHeight = this.bodyHeight();
 		const history = this.historyLines(this.contentWidth());
@@ -670,33 +672,39 @@ class BtwComponent implements Component, Focusable {
 		if (this.scroll > maxScroll) this.scroll = maxScroll;
 		const start = Math.max(0, history.length - historyHeight - this.scroll);
 
-		const lines: string[] = [this.rule(width), this.headerLine(width, start), this.rule(width)];
+		const lines: string[] = [this.rule(inner, "┌", "┐"), this.frame(`  ${this.headerLine(inner - 2, start)}`, inner), this.rule(inner, "├", "┤")];
 		const visible = history.slice(start, start + historyHeight);
-		for (const line of visible) lines.push(this.pad(`  ${line}`, width));
-		for (let i = visible.length; i < historyHeight; i++) lines.push(" ".repeat(width));
-		for (const line of noticeLines) lines.push(this.pad(`  ${line}`, width));
+		for (const line of visible) lines.push(this.frame(`  ${line}`, inner));
+		for (let i = visible.length; i < historyHeight; i++) lines.push(this.frame("", inner));
+		for (const line of noticeLines) lines.push(this.frame(`  ${line}`, inner));
 
 		if (this.mode === "promote") {
-			const presetWidth = Math.max(10, Math.floor(width / this.t.presets.length) - 6);
+			const presetWidth = Math.max(10, Math.floor(inner / this.t.presets.length) - 6);
 			const presets = this.t.presets
 				.map((preset, index) => this.theme.fg("dim", `${index + 1}. `) + truncateToWidth(preset, presetWidth, ""))
 				.join("   ");
-			lines.push(this.pad(`  ${this.theme.fg("muted", truncateToWidth(presets, width - 4))}`, width));
+			lines.push(this.frame(`  ${this.theme.fg("muted", truncateToWidth(presets, inner - 4))}`, inner));
 			lines.push(
-				this.pad(
-					`  ${this.theme.fg("dim", truncateToWidth(`${this.t.promoteHint}  5. ${transcriptLabel(this.t)}`, width - 4))}`,
-					width,
+				this.frame(
+					`  ${this.theme.fg("dim", truncateToWidth(`${this.t.promoteHint}  5. ${transcriptLabel(this.t)}`, inner - 4))}`,
+					inner,
 				),
 			);
 		}
 
-		for (const line of editorLines) lines.push(this.pad(line, width));
-		lines.push(this.footerLine(width));
+		for (const line of editorLines) lines.push(this.frame(line, inner));
+		lines.push(this.frame(`  ${this.footerLine(inner - 2)}`, inner));
 		return lines;
 	}
 
-	private rule(width: number): string {
-		return this.theme.fg("borderMuted", "─".repeat(width));
+	private rule(width: number, left: string, right: string): string {
+		return this.theme.fg("borderMuted", left + "─".repeat(Math.max(0, width)) + right);
+	}
+
+	/** Panel line with its left and right gutter, padded so both borders line up. */
+	private frame(line: string, width: number): string {
+		const border = this.theme.fg("borderMuted", "│");
+		return border + this.pad(line, width) + border;
 	}
 
 	private headerLine(width: number, start: number): string {

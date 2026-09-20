@@ -20,7 +20,6 @@ pi install npm:@335g/pi-byetheway
 ## Usage
 
 - `/btw` — open the space
-- `alt+b` — resume a space you stashed with `Esc`
 
 Keys:
 

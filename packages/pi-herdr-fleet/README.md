@@ -47,8 +47,8 @@ In the detail view:
 
 | Key | Action |
 |-----|--------|
-| `Enter` | send what you typed as a prompt (`agent.prompt`) |
-| `ctrl+k` | send what you typed as raw keys (`agent.send_keys`) |
+| `Enter` | send what you typed, then Enter (`pane.send_input`) |
+| `ctrl+k` | send what you typed as raw keys (`pane.send_keys`) |
 | `PageUp` `PageDown` | scroll the question |
 | `Esc` | back to the list |
 
@@ -62,6 +62,12 @@ one you take is your choice rather than a guess the extension makes from your te
 - **Raw keys** (`ctrl+k`) writes keystrokes instead. The input is split on whitespace, so
   `esc 1` sends `esc` then `1`, `up up enter` walks a menu, and an empty input is a bare `Enter`
   — the common case for a confirmation dialog.
+
+Both routes go through the pane surface (`pane.send_input` / `pane.send_keys`), not the agent
+surface. That is not a shortcut: `agent.prompt` **refuses any pane herdr reports as blocked**
+(`agent_blocked`) — which is every pane this overlay can answer — and `agent.send_keys` refuses an
+agent reported through `pane.report_agent` (`agent_not_ready`), which is how hooks and plugins report
+state. Answering an approval dialog is intentional raw input into that pane.
 
 Two things never happen:
 
@@ -163,6 +169,23 @@ Recipes and the environment copy are checked against real temporary directories:
 keeps `cwd`/`env`/`command` but no `pane_id`, that `--start` decides whether commands are replayed,
 that a name cannot escape the recipe directory, and — with a stubbed `direnv` — that an unallowed
 source `.envrc` is never allowed in the new worktree while an allowed one is.
+
+### Acceptance
+
+```sh
+packages/pi-herdr-fleet/acceptance.sh
+```
+
+End-to-end against a real herdr server, real panes, real direnv and a real Pi TUI. Run it from
+inside a herdr pane. The broker never lists its own pane, so this needs three panes, and the script
+builds them: a **subject** shell reported as `blocked` through `pane.report_agent`, an **observer**
+Pi running this extension in a different pane, and the caller's pane. It then checks the
+notification, the overlay listing, the question in the detail view, both answer routes (text and
+raw keys), and that `Esc` closes the overlay. Only the panes it created are closed.
+
+Reporting the subject's state instead of waiting for a real agent keeps the run deterministic: no
+model has to answer, yet the whole path — socket, subscription, overlay, key delivery into the
+subject's `read` — is exercised for real.
 
 There is no `tsconfig.json` in this repo, so the type check is explicit:
 

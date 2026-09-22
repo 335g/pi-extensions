@@ -96,14 +96,14 @@ export class ApprovalBroker {
 	}
 
 	async sendText(paneId: string, text: string): Promise<Outcome<void>> {
-		const result = await this.client.agentPrompt(paneId, text);
+		const result = await this.client.paneSendInput(paneId, text);
 		this.lastError = result.ok ? undefined : result.error;
 		return result;
 	}
 
 	async sendKeys(paneId: string, keys: string[]): Promise<Outcome<void>> {
 		if (keys.length === 0) return err("no keys to send");
-		const result = await this.client.agentSendKeys(paneId, keys);
+		const result = await this.client.paneSendKeys(paneId, keys);
 		this.lastError = result.ok ? undefined : result.error;
 		return result;
 	}

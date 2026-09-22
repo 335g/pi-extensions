@@ -46,8 +46,8 @@ pi install npm:@335g/pi-herdr-fleet
 
 | キー | 動作 |
 |------|------|
-| `Enter` | 入力したテキストを送る（`agent.prompt`） |
-| `ctrl+k` | 入力した内容を生キーとして送る（`agent.send_keys`） |
+| `Enter` | 入力したテキストを送ってから Enter（`pane.send_input`） |
+| `ctrl+k` | 入力した内容を生キーとして送る（`pane.send_keys`） |
 | `PageUp` `PageDown` | 質問文をスクロール |
 | `Esc` | 一覧へ戻る |
 
@@ -60,6 +60,12 @@ pi install npm:@335g/pi-herdr-fleet
 - **テキスト**（`Enter`）— 入力した内容を、その pane の入力欄に打ったのと同じように送る。
 - **生キー**（`ctrl+k`）— 代わりにキーストロークを送る。入力は空白で区切るので、`esc 1` は `esc` の次に
   `1`、`up up enter` はメニューを辿る。入力が空なら素の `Enter` になる。確認ダイアログではこれが普通。
+
+どちらの経路も pane 側の API（`pane.send_input` / `pane.send_keys`）を使う。agent 側は使えない。
+`agent.prompt` は **herdr が blocked と報告している pane を拒否し**（`agent_blocked`）、それはこの
+overlay が答えられる pane のすべてにあたる。`agent.send_keys` も `pane.report_agent` で報告された
+agent を拒否する（`agent_not_ready`）。hook や plugin はその経路で状態を報告する。承認ダイアログに
+答えるのは、その pane への意図的な生入力なので pane 側を使う。
 
 次の 2 つは起きない。
 
@@ -152,6 +158,21 @@ node packages/pi-herdr-fleet/selfcheck.ts
 `pane_id` を落とすこと、`--start` がコマンド再現の有無を決めること、名前がレシピのディレクトリの外に
 出られないこと、そして direnv を差し替えて、allow されていない元の `.envrc` は新しい worktree でも
 allow されず、allow 済みのものは引き継がれること。
+
+### 受入試験
+
+```sh
+packages/pi-herdr-fleet/acceptance.sh
+```
+
+実の herdr サーバ、実の pane、実の direnv、実の Pi TUI で通す。herdr の pane の中で実行する。
+ブローカーは自分の pane を一覧に出さないので pane は 3 つ要り、スクリプトがそれを作る。
+`pane.report_agent` で `blocked` を報告した **subject** の shell、別 pane でこの拡張を読み込んだ
+**observer** の Pi、そして呼び出し元の pane。確認するのは、通知、overlay の一覧、詳細画面の質問文、
+回答の 2 経路（テキストと生キー）、`Esc` で overlay が閉じること。閉じるのは自分が作った pane だけ。
+
+subject の状態を実エージェントではなく報告で作るので、実行は決定的になる。モデルに答えさせずに、
+socket・購読・overlay・subject の `read` へのキー配送という経路全体を実際に通す。
 
 このリポジトリに `tsconfig.json` は無いので、型チェックは明示的に実行する:
 

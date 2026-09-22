@@ -155,14 +155,23 @@ export class HerdrClient {
 		return ok(text);
 	}
 
-	/** Raw keystrokes: `1`, `enter`, `esc`, `up`, `ctrl+c`, ... */
-	agentSendKeys(target: string, keys: string[]): Promise<Outcome<void>> {
-		return this.expectOk("agent.send_keys", { target, keys });
+	/** Raw keystrokes into a pane: `1`, `enter`, `esc`, `up`, `ctrl+c`, ... */
+	paneSendKeys(paneId: string, keys: string[]): Promise<Outcome<void>> {
+		return this.expectOk("pane.send_keys", { pane_id: paneId, keys });
 	}
 
-	/** A typed answer, submitted the way the pane's own input would be. */
-	agentPrompt(target: string, text: string): Promise<Outcome<void>> {
-		return this.expectOk("agent.prompt", { target, text });
+	/**
+	 * Literal text followed by keys, as one ordered submission.
+	 *
+	 * The agent-level write methods are the wrong tool for answering a dialog.
+	 * `agent.prompt` refuses any pane herdr reports as blocked (`agent_blocked`)
+	 * — which is every pane this extension can answer — and `agent.send_keys`
+	 * refuses an agent reported through `pane.report_agent` (`agent_not_ready`),
+	 * which is how hooks and plugins report state. The pane surface has neither
+	 * check, and answering an approval dialog is intentional raw input.
+	 */
+	paneSendInput(paneId: string, text: string, keys: string[] = ["enter"]): Promise<Outcome<void>> {
+		return this.expectOk("pane.send_input", { pane_id: paneId, text, keys });
 	}
 
 	/**

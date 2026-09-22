@@ -107,12 +107,17 @@ worktree には git 管理外の開発環境が来ない。`.env` も `.envrc` �
 - `sourceRoot` から `.env*` と `.envrc` をコピーする。既に存在するファイルは上書きしない
 - `.envrc` をコピーした場合のみ `direnv allow <worktreePath>` を実行する
 - **元の `.envrc` が既に allow されている場合に限る。** `direnv status --json` の
-  `state.foundRC.allowed === 0` で判定する。allow されていない `.envrc` を新しい場所で
-  allow することは信頼の付与であり、拡張が勝手にやってはいけない
+  `state.foundRC.allowed` が `0`（allow 済み）のときだけ実行する。`1` は未許可、`2` は `direnv deny`
+  による明示的な拒否（実測で確認済み）。0 以外は allow しない。
+  allow されていない `.envrc` を新しい場所で allow することは信頼の付与であり、
+  拡張が勝手にやってはいけない
 - direnv が無い、または `.envrc` が無い場合はコピーだけして警告を返す
 - 失敗しても worktree の作成自体は成功として扱い、警告として報告する
 
 公開は `/fleet worktree create <branch>` から。③ の fork も同じ関数を使う。
+
+`.env` の次に来る同じ問題: 新しい worktree には `node_modules` が無い。`npm install` を fork が
+面倒を見るか、seed の指示に含めるかは Phase 3 で決める。
 
 ## 5. ③ のデータモデル（実装は Phase 3）
 

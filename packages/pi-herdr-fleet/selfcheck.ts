@@ -105,8 +105,8 @@ const server = net.createServer((socket) => {
 				case "agent.read":
 					reply({ result: { type: "pane_read", read: { text: `  question for ${request.params.target}  ` } } });
 					break;
-				case "agent.send_keys":
-				case "agent.prompt":
+				case "pane.send_keys":
+				case "pane.send_input":
 					reply({ result: { type: "ok" } });
 					break;
 				case "boom":
@@ -182,11 +182,17 @@ try {
 	const read = await client.agentRead("w1:p2", "detection");
 	assert(read.ok && read.value.trim() === "question for w1:p2", `agent.read should return the text: ${JSON.stringify(read)}`);
 
-	assert((await client.agentSendKeys("w1:p2", ["esc", "1"])).ok, "agent.send_keys should succeed");
-	assert((await client.agentPrompt("w1:p2", "yes, go ahead")).ok, "agent.prompt should succeed");
+	assert((await client.paneSendKeys("w1:p2", ["esc", "1"])).ok, "pane.send_keys should succeed");
+	assert((await client.paneSendInput("w1:p2", "yes, go ahead")).ok, "pane.send_input should succeed");
 	assert(
-		received.some((call) => call.method === "agent.send_keys" && call.params.keys.join() === "esc,1"),
+		received.some((call) => call.method === "pane.send_keys" && call.params.keys.join() === "esc,1"),
 		"send_keys must carry the keys",
+	);
+	assert(
+		received.some(
+			(call) => call.method === "pane.send_input" && call.params.text === "yes, go ahead" && call.params.keys.join() === "enter",
+		),
+		"send_input must submit the text followed by Enter",
 	);
 
 	// ------------------------------------------------------------ subscribe paths

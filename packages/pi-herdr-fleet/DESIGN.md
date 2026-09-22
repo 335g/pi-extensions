@@ -141,7 +141,7 @@ Pi のコマンドで回す。分岐するのはリポジトリだけでなく**
 | 増分 | 内容 |
 |---|---|
 | 3a | `fork` — worktree 作成 + 準備 + pane/Pi 起動 + 実装スコープの seed |
-| 3b | `review` — レビュースコープの文脈パッケージ（差分 + 作者セッション） |
+| 3b | `review` — レビュースコープの文脈パッケージ（差分 + 作者セッション）（実装済み） |
 | 3c | verdict のパースとマージゲート |
 
 ### 3a: fork — ツール `fleet_fork` とコマンド `/fleet fork`
@@ -190,22 +190,21 @@ Pi のコマンドで回す。分岐するのはリポジトリだけでなく**
 5. worktree path / branch / pane id / agent 名を返す。worktree ごとの状態一覧は 3c の
    `/fleet status` で作る（3a では一覧を持たない）
 
-### fork を linked worktree からも使えるようにする（緩和策の検討）
+### fork を linked worktree からも使えるようにする（実装済み）
 
 現状 `worktree.create` は cwd が linked worktree だと `linked_worktree_source` で拒否する。
 fork は main checkout の workspace からしか使えず、fork の入れ子ができない。
 
 候補:
 
-1. **main worktree に解決してから呼ぶ。** `git worktree list --porcelain` の先頭が main worktree。
-   cwd が linked worktree なら、main の path を `worktree.create` の `cwd` に渡す
-   - `--base` を明示しないと fork 点が main checkout の HEAD に移る。呼び出し元の HEAD を ref として
-     渡す必要がある
+1. **main worktree に解決してから呼ぶ。（採用）** `git worktree list --porcelain` の先頭が main worktree。
+   cwd が linked worktree のときだけ `worktree.create` の cwd をそこに差し替える
+   - `base` は呼び出し元の checkout で `git rev-parse` して sha に固定する。固定しないと fork 点が
+     main checkout の HEAD に移る
    - 呼び出し元に未コミットの変更がある場合、それは fork に入らない。警告を出す
-2. **拒否したままにする。** main セッションだけが fork する構成では成立している。
-   エラーに「main checkout から実行すること」を明記する
-
-1 を試し、素直にいかなければ 2 を受け入れる。
+   - 環境のコピー元は呼び出し元の checkout のまま。fork が引き継ぐのは自分が動いている環境であって、
+     main checkout の環境ではない
+2. 拒否したままにする。（不要になった）
 
 ### スコープ registry (`scopes.ts`)
 
@@ -213,10 +212,15 @@ fork は main checkout の workspace からしか使えず、fork の入れ子�
 Scope = {
   id: string
   purpose: string
+  forkable: boolean               // fleet_fork の scope 引数に載るか
   seed(input: ForkInput): string   // 新しいセッションに送る 1 通
   deliverable: string
 }
 ```
+
+registry は「文脈パッケージの registry」。各エントリは対応する入口（`fleet_fork` / `fleet_review`）を
+`forkable` で宣言する。`review` は差分を必要とするので fork からは組み立てられず、`fleet_review` から
+だけ使える。
 
 `implementation`（3a）:
 
@@ -229,8 +233,14 @@ Scope = {
 - `git diff <base>...HEAD` を worktree で実行した結果
 - 実装セッションに渡したタスク本文
 - 実装セッションの最終アシスタントメッセージ（報告）
-- **作者の Pi セッション JSONL を `agent_session.value` のパスから読む。** assistant のテキストを抜き、
-  上限を付けて渡す。diff だけでは出せない情報
+- **作者の Pi セッション JSONL を `agent_session.value` のパスから読む。** assistant の **text パートだけ**を
+  抜き、上限を付けて渡す。diff だけでは出せない情報
+  - thinking は入れない。token 量を支配する上に、探索して捨てた筋であって作者が立った結論ではない。
+    作者が説明として書いた text を読む
+  - 上限は **300 行かつ 20000 文字**（両方、末尾から適用）。one-line のツール結果が多いセッションと長文の
+    セッションで当たる天井が違うため両方要る。20000 文字 ≒ 5k tokens で diff の隣に置ける大きさ
+  - 読むのはファイルの末尾 **4MB** だけ（全体をメモリに載せない。先頭の切れた行は捨てる）
+  - diff は **60000 文字**で切り、切ったことを seed に明記する（レビュワーは自分で `git diff` を打てる）
 - 出力を verdict 形式に固定する（3c で `fleet_verdict` ツールに差し替える）
 
 **レビューは実装 worktree の中の新しい pane で行う。** 同じ branch を 2 つ目の worktree にチェックアウト
@@ -238,7 +248,12 @@ Scope = {
 指示する。隔離が必要になったら detached な 2 つ目の worktree を検討する。
 
 `/fleet review <branch>` とツール `fleet_review` を出す。fork と同じく**ツールが主、コマンドは薄い
-ラッパ**。
+ラッパ**。`branch` と `task` は必須。
+
+`base` の既定は main checkout の HEAD。`git diff <base>...HEAD` は merge-base からの差分なので、
+fork 後に main が進んでも fork 点のままになる。ただし**入れ子 fork では明示が必要**（共通祖先が親
+ブランチの分岐点まで戻るため、親ブランチの変更まで混ざる）。fork が使った base を記録するのは 3c で
+worktree ごとの状態を持つときに行う。
 
 スコープを増やすときはこの registry に足すだけ。
 
@@ -247,26 +262,72 @@ Scope = {
 **verdict はテキスト規約ではなくツール呼び出しにする。** 3a で fork が第一級のツールになったので、
 同じ仕組みを使う方が決定性が高く、JSONL から `VERDICT:` 行を探すパースも要らない。
 
-レビュワーに `fleet_verdict` ツールを渡す:
+#### 実行記録（3c で初めて永続する状態を持つ）
+
+`<main checkout>/.pi/herdr-fleet/runs/<branch>.json`（branch の `/` は `-` に置換）。fork / review が
+書き、`fleet_verdict` が更新する。
+
+```
+{
+  branch, base, path, workspaceId, paneId, agentName, scope, task, createdAt,
+  reviewer?: { paneId, agentName, sessionPath },
+  verdict?: { verdict, findings, at }
+}
+```
+
+**なぜセッション JSONL の読み直しで済ませないか。** verdict を生きたレビュワーのセッションにしか
+置かないと、**pane を閉じるだけでゲートが黙って外れる**。ゲートの完全性はファイルに置く。
+`base` もここに記録する（fork が使った base を review が既定に使えるようになるため。入れ子 fork で
+必要になる）。
+
+#### `fleet_verdict` ツール
 
 | 引数 | 型 | 内容 |
 |---|---|---|
 | `verdict` | enum | `approve` / `request-changes` |
 | `findings` | array | `{ path, line?, note }` の配列 |
 
-- ツール呼び出しはレビュワーのセッション JSONL に残るので、main はそこから読む
-- `/fleet status` が worktree ごとに 未レビュー / approve / request-changes を出す
-- `/fleet merge <branch>` は approve が無ければ拒否する。`--force` で上書きできる
-- verdict は Pi の custom entry としても記録し、main の会話ツリーに残す
-- `request-changes` の findings をそのまま実装セッションに送り返せるようにする（差し戻しの経路）
+- **呼び出し元の pane がその run の記録した reviewer pane でなければ拒否する。** 拡張は全セッションに
+  入っているので、この検査が無いとどのセッションからでも verdict を書ける
+- 書き込むと同時に Pi の custom entry としても記録し、main の会話ツリーに残す
+- レビュワーが verdict を返さずに終わった場合、run は「未レビュー」のまま
 
-### 決めきれていない点（実装前に確認したい）
+#### レビュワーの起動
 
-1. `npm install` を fork がやるか、seed の指示に含めるか。上は「fork がやる」で書いたが、install が
-   遅いリポジトリでは待たされる
-2. 実装スコープに会話履歴を一切渡さない方針でよいか。main で決めた設計判断はタスク本文に書き写す
-   必要がある
-3. verdict の形式を固定してよいか。自由記述を拡張が LLM で要約する案もあるが、決定性を優先した
+`fleet_review` はレビュワーを `agent.start ... -- -e <この拡張の入口>` で起動する。
+
+- `-e` で自分の入口を明示する理由は 2 つ。インストールされていなくても `fleet_verdict` が渡ること、
+  そして**開発中はインストール済みのパスが main checkout の古いコードを指す**ため（worktree のコードを
+  レビュワーに使わせたい）
+- 入口のパスは `import.meta.url` から取る
+- `-ne` は付けない。レビュワーにも普段の拡張を効かせる
+
+#### `/fleet status`
+
+run ごとに branch / scope / 状態 / verdict を出す。状態は 作業中 / 未レビュー / approve /
+request-changes / マージ済み。
+
+#### `/fleet merge <branch> [--force]`
+
+- `verdict.verdict === "approve"` でなければ拒否する。`--force` で上書きできる
+- main checkout の作業ツリーが汚れていれば拒否する
+- `git merge <branch>` を main checkout で実行する。`--ff-only` は使わない（必要なら merge commit を
+  作る。`--no-edit`）
+- マージ後も run の記録は残し、worktree は消さない。後始末は別の操作にする
+- このリポジトリでは `pi-autocommit` が agent の `git merge` をブロックする。ブロックされたらその
+  メッセージをそのまま見せる（拡張が回避するものではない）
+
+#### 差し戻し
+
+`request-changes` の findings を実装セッションに送り返す経路を作る。実装セッションが生きていれば
+`pane.send_input` で送る。死んでいれば `/fleet fork` で新しいセッションを立てる。3c では前者だけ。
+
+### 決めきれていない点
+
+1. `npm install` を fork がやるか、seed の指示に含めるか → **決着: fork がやる。** 逃げ道は
+   `install: false`
+2. 実装スコープに会話履歴を一切渡さない方針でよいか → **決着: 渡さない。** brief は完全に書く
+3. verdict の形式を固定してよいか → **決着: テキスト規約をやめ、`fleet_verdict` ツールにする**
 
 ## テストの方針
 
@@ -274,13 +335,13 @@ Scope = {
 
 | ファイル | 行数 | 役割 |
 |---|---|---|
-| `selfcheck.ts` | 711 | fake herdr サーバに対するロジック検証 |
+| `selfcheck.ts` | 894 | fake herdr サーバに対するロジック検証 |
 | `acceptance.sh` | 194 | Phase 1/2 の実 pane 受入試験 |
-| `acceptance-fork.sh` | 467 | Phase 3a の実 pane 受入試験 |
+| `acceptance-fork.sh` | 734 | Phase 3a/3b の実 pane 受入試験 |
 
-実装（`fork.ts` 175 行）より試験が大きい。リポジトリの慣例（`pi-byetheway/selfcheck.ts` 74 行）
-からは大きく外れている。穴を見つけているので無駄ではないが、増分ごとに selfcheck +150 行 /
-acceptance +200 行が積み上がるペースは持続しない。
+実装（`fork.ts` 181 行 + `review.ts` 422 行）に対して試験が大きい。リポジトリの慣例
+（`pi-byetheway/selfcheck.ts` 74 行）からは大きく外れている。穴を見つけているので無駄ではないが、
+増分ごとに selfcheck +150 行 / acceptance +250 行が積み上がるペースは持続しない。
 
 整理の方向:
 
@@ -349,3 +410,9 @@ Phase 3 の検証（増分ごとに追記する）:
 - `--no-start` で pane を作らず worktree だけ作ること → `acceptance-fork.sh`
 - `fleet_fork` をツールとして agent が呼べること、引数不足が拒否されること
   → `acceptance-fork.sh` 7〜8 節（実 pane の observer に呼ばせて確認）
+- `review` の seed に diff・タスク本文・作者セッションから抜いた推論が入ること、上限が効くこと
+  → `acceptance-fork.sh` 9 節と、実セッション 2.1MB を `readAuthorSession` に通した確認
+- linked worktree からの fork が、fork 点を呼び出し元の HEAD に固定して未コミット変更を警告すること
+  → `acceptance-fork.sh` 10 節
+- **未検証**: `fleet_review` を agent に呼ばせた実 pane 試験（実 pane はコマンド経路のみ。ツール経路は
+  selfcheck のスキーマと拒否検査だけ）。60000 文字を超える実 diff の切り詰め。4MB を超える実セッション

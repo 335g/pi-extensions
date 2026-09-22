@@ -18,7 +18,8 @@ import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient, type Outcome, type SubscribeEvent } from "./herdr-client.ts";
 import { tokenize } from "./index.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
-import { findScope, scopeIds } from "./scopes.ts";
+import { fleetReviewTool, readAuthorSession, reviewWorktree } from "./review.ts";
+import { findScope, forkScopeIds, scopeIds } from "./scopes.ts";
 import {
 	type CommandResult,
 	type CommandRunner,
@@ -61,6 +62,7 @@ interface FakeAgent {
 	name?: string;
 	agent_status: string;
 	state_labels?: Record<string, string>;
+	agent_session?: { value: string };
 }
 
 /** Mutable: herdr's state is what the broker re-reads, so the test moves it. */
@@ -97,6 +99,8 @@ let refuseNextSubscribe = false;
 let waitText = "";
 /** `agent.start` failures, consumed one per call; empty means it succeeds. */
 let startFaults: { code: string; message: string }[] = [];
+/** What `worktree.list` reports. Set per test; empty means "no worktrees". */
+let worktreeList: { path: string; branch: string; open_workspace_id: string | null }[] = [];
 
 const server = net.createServer((socket) => {
 	let buffer = "";
@@ -159,6 +163,15 @@ const server = net.createServer((socket) => {
 						},
 					});
 					break;
+				case "worktree.list":
+					reply({
+						result: {
+							type: "worktree_list",
+							source: { repo_key: "/repo/.git", repo_name: "repo", repo_root: "/repo", source_checkout_path: "/repo" },
+							worktrees: worktreeList,
+						},
+					});
+					break;
 				case "pane.split":
 					reply({ result: { type: "pane_info", pane: { pane_id: "w9:p2", workspace_id: "w9" } } });
 					break;
@@ -200,7 +213,6 @@ try {
 
 	const ok = await client.snapshot();
 	assert(ok.ok && ok.value.agents.length === 3, "session.snapshot should return the snapshot");
-
 	const failure = await client.request("boom", {});
 	assert(!failure.ok && failure.error.includes("not found"), `an error response must degrade: ${JSON.stringify(failure)}`);
 	assert(!failure.ok && failure.code === "pane_not_found", `herdr's error code must survive: ${JSON.stringify(failure)}`);
@@ -490,8 +502,9 @@ try {
 	// The scope registry: one message, built from the task and the worktree.
 	const implementation = findScope("implementation");
 	assert(implementation !== undefined, "the implementation scope must be registered");
-	assert(findScope("review") === undefined, "review is 3b, not 3a");
-	assert(scopeIds() === "implementation", `the registry lists exactly 3a's scopes: ${scopeIds()}`);
+	assert(findScope("review") !== undefined, "the review scope is registered");
+	assert(forkScopeIds().join() === "implementation", `a fork is offered only the forkable scopes: ${forkScopeIds()}`);
+	assert(scopeIds() === "implementation, review", `the registry lists both scopes: ${scopeIds()}`);
 	const seed = implementation!.seed({ task: "TASK-MARKER", path: "/wt", branch: "feat/x", base: "main" });
 	assert(
 		["TASK-MARKER", "/wt", "feat/x", "main", "Commit"].every((part) => seed.includes(part)),
@@ -499,6 +512,29 @@ try {
 	);
 	assert(seed.split("\n").filter((line) => line.startsWith("worktree: ")).length === 1, "the worktree is named once");
 	assert(implementation!.deliverable.length > 0 && seed.includes(implementation!.deliverable), "the deliverable is part of the brief");
+
+	// The review seed carries the material no scope before it needed: what was
+	// asked, what changed, and what the author said.
+	const reviewScope = findScope("review")!;
+	const reviewSeedText = reviewScope.seed({
+		task: "REVIEW-TASK",
+		path: "/wt",
+		branch: "feat/x",
+		base: "main",
+		diff: "DIFF-MARKER",
+		author: "AUTHOR-MARKER",
+		authorSession: "/sessions/author.jsonl",
+	});
+	for (const part of ["REVIEW-TASK", "DIFF-MARKER", "AUTHOR-MARKER", "/wt", "feat/x", "main", "/sessions/author.jsonl"]) {
+		assert(reviewSeedText.includes(part), `the review seed carries ${part}: ${reviewSeedText.slice(0, 400)}`);
+	}
+	assert(reviewSeedText.includes("read-only") || reviewSeedText.includes("Do not modify"), "the reviewer is told to leave the worktree alone");
+	assert(
+		reviewSeedText.includes("VERDICT: approve | request-changes") && reviewSeedText.includes(reviewScope.deliverable),
+		"the verdict shape is fixed in the seed, because 3c has no tool to read yet",
+	);
+	const bareReview = reviewScope.seed({ task: "T", path: "/wt", branch: "b" });
+	assert(bareReview.includes("(the diff is empty)"), "a review with no material says so instead of looking empty");
 
 	// Quoted arguments survive the command line: `--task "two words"` is one argument.
 	assert(tokenize('fork feat/x --task "two words"').join("|") === "fork|feat/x|--task|two words", "a double-quoted argument is one token");
@@ -579,7 +615,10 @@ try {
 	const schema = tool.parameters as any;
 	assert(tool.name === "fleet_fork", `the tool name is the API: ${tool.name}`);
 	assert(schema.required.join() === "branch,task", `branch and task must be required: ${JSON.stringify(schema.required)}`);
-	assert(schema.properties.scope.enum.join() === scopeIds(), `the scope enum comes from the registry: ${JSON.stringify(schema.properties.scope)}`);
+	assert(
+		schema.properties.scope.enum.join() === forkScopeIds().join(),
+		`the fork's scope enum is the forkable scopes: ${JSON.stringify(schema.properties.scope)}`,
+	);
 	assert(
 		schema.properties.install.type === "boolean" && schema.properties.start.type === "boolean",
 		"install and start are optional booleans",
@@ -591,6 +630,8 @@ try {
 	for (const request of [
 		{ cwd: dirs.source, branch: "  ", task: "do it" },
 		{ cwd: dirs.source, branch: "feat/x", task: "" },
+		{ cwd: dirs.source, branch: "feat/x", task: "do it", scope: "nonsense" },
+		// `review` is a scope, but a fork cannot build its seed: there is no diff yet.
 		{ cwd: dirs.source, branch: "feat/x", task: "do it", scope: "review" },
 	]) {
 		const refused = await forkWorktree(client, run, request);
@@ -654,6 +695,111 @@ try {
 	assert((await refusal({ branch: "", task: "" })).includes("required"), "an empty request must fail the tool call");
 	assert((await refusal({ branch: "feat/x", task: "do it" }, "print")).includes("interactive"), "outside a TUI session the tool refuses");
 
+	// ------------------------------------------------------------ author session
+
+	// The author's session is JSONL and grows to megabytes, so only the assistant
+	// text is taken and both a line and a character cap are applied — from the end,
+	// because the report is the newest message.
+	const sessionPath = join(scratch, "author.jsonl");
+	const sessionLine = (message: unknown) => `${JSON.stringify({ type: "message", message })}\n`;
+	writeFileSync(
+		sessionPath,
+		sessionLine({ role: "user", content: [{ type: "text", text: "SEED-MARKER" }] }) +
+			sessionLine({ role: "assistant", content: [{ type: "text", text: "FIRST" }] }) +
+			sessionLine({ role: "assistant", content: [{ type: "thinking", thinking: "HIDDEN" }, { type: "text", text: "SECOND" }] }) +
+			sessionLine({ role: "assistant", content: [{ type: "text", text: "THIRD\nline two" }] }) +
+			"{ not json at all\n",
+	);
+	const excerpt = readAuthorSession(sessionPath);
+	assert(excerpt.messages === 3 && !excerpt.truncated, `all three assistant messages fit: ${JSON.stringify(excerpt)}`);
+	assert(excerpt.text.includes("FIRST") && excerpt.text.includes("SECOND") && excerpt.text.includes("THIRD"), "the assistant text must be extracted");
+	assert(!excerpt.text.includes("SEED-MARKER") && !excerpt.text.includes("HIDDEN"), "neither the user nor the thinking is the author's text");
+	const byLines = readAuthorSession(sessionPath, 6);
+	assert(byLines.truncated && byLines.text.includes("THIRD") && !byLines.text.includes("FIRST"), `the line cap keeps the newest: ${JSON.stringify(byLines)}`);
+	const byChars = readAuthorSession(sessionPath, 100, 60);
+	assert(byChars.truncated && byChars.text.includes("THIRD") && !byChars.text.includes("FIRST"), `the character cap keeps the newest: ${JSON.stringify(byChars)}`);
+	assert(readAuthorSession(sessionPath, 100, 30).text.includes("earlier messages omitted"), "a message larger than the budget is cut, and says so");
+
+	// Both caps bound what is delivered, separators and the omission marker
+	// included. Counting only the messages' own lines would deliver 1500 lines of
+	// seed for a session of 300 one-line messages.
+	const manyPath = join(scratch, "many.jsonl");
+	writeFileSync(
+		manyPath,
+		Array.from({ length: 400 }, (_, index) => sessionLine({ role: "assistant", content: [{ type: "text", text: `M${index}` }] })).join(""),
+	);
+	const capped = readAuthorSession(manyPath);
+	assert(capped.truncated && capped.messages < 400, `a long session is cut: ${capped.messages} messages`);
+	assert(capped.text.split("\n").length <= 300, `the excerpt is at most 300 lines: ${capped.text.split("\n").length}`);
+	assert(capped.text.length <= 20_000, `the excerpt is at most 20000 characters: ${capped.text.length}`);
+	assert(capped.text.includes("M399") && !capped.text.includes("M0"), "the newest message survives and the oldest does not");
+
+	// ------------------------------------------------------------ review
+
+	/** git's answers for the review: one helper, so each test states only its answers. */
+	const gitAnswer = (responses: Record<string, string>) => (command: string, args: string[]) => {
+		const stdout = command === "git" ? responses[args.join(" ")] ?? responses[args[0]!] ?? "" : "";
+		return { stdout, stderr: "", code: 0, killed: false };
+	};
+	mkdirSync(join(scratch, "checkout"), { recursive: true });
+
+	snapshot.agents.push({
+		pane_id: "w1:p7",
+		workspace_id: "w1",
+		agent: "pi",
+		name: "feat-review",
+		agent_status: "idle",
+		agent_session: { value: sessionPath },
+	});
+	snapshot.panes.push({ pane_id: "w1:p7", workspace_id: "w1" });
+	worktreeList = [{ path: "/repo/wt", branch: "feat/review", open_workspace_id: "w1" }];
+	answer = gitAnswer({ "rev-parse": "cafe\n", diff: "DIFF-MARKER\n" });
+	received.length = 0;
+	startFaults = [];
+	const reviewed = unwrap(await reviewWorktree(client, run, { cwd: "/repo", branch: "feat/review", task: "TASK-MARKER" }), "reviewWorktree");
+	assert(reviewed.path === "/repo/wt" && reviewed.workspaceId === "w1", `the review runs in the author's worktree: ${JSON.stringify(reviewed)}`);
+	assert(reviewed.authorPaneId === "w1:p7" && reviewed.authorSession === sessionPath, `the author is found by its agent name: ${JSON.stringify(reviewed)}`);
+	assert(reviewed.base === "cafe" && reviewed.diffChars === "DIFF-MARKER\n".length, `the diff is taken against the main checkout's HEAD: ${JSON.stringify(reviewed)}`);
+	const reviewSplit = received.find((call) => call.method === "pane.split")!;
+	assert(
+		reviewSplit.params.cwd === "/repo/wt" && reviewSplit.params.workspace_id === "w1" && reviewSplit.params.target_pane_id === "w1:p7",
+		`the review pane must land in the author's worktree: ${JSON.stringify(reviewSplit.params)}`,
+	);
+	const reviewStart = received.filter((call) => call.method === "agent.start").at(-1)!;
+	assert(reviewStart.params.name === "feat-review-review", `the reviewer needs its own agent name: ${JSON.stringify(reviewStart.params)}`);
+	const reviewSeed = received.filter((call) => call.method === "pane.send_input").at(-1)!.params.text as string;
+	for (const material of ["TASK-MARKER", "DIFF-MARKER", "THIRD", "/repo/wt", "VERDICT: approve | request-changes"]) {
+		assert(reviewSeed.includes(material), `the seed must carry the review material (${material}): ${reviewSeed.slice(0, 400)}`);
+	}
+	assert(!reviewSeed.includes("SEED-MARKER"), "the author's seed is not the author's report");
+
+	// Nothing is started for a request that cannot be reviewed.
+	worktreeList = [];
+	received.length = 0;
+	for (const bad of [
+		{ cwd: "/repo", branch: "  ", task: "t" },
+		{ cwd: "/repo", branch: "feat/review", task: " " },
+		{ cwd: "/repo", branch: "feat/nope", task: "t" },
+	]) {
+		const refused = await reviewWorktree(client, run, bad);
+		assert(!refused.ok, `an unanswerable review must be refused: ${JSON.stringify(bad)}`);
+	}
+	worktreeList = [{ path: "/repo/wt", branch: "feat/closed", open_workspace_id: null }];
+	assert(!(await reviewWorktree(client, run, { cwd: "/repo", branch: "feat/closed", task: "t" })).ok, "a worktree with no workspace has nowhere to review");
+	assert(
+		received.every((call) => call.method === "worktree.list"),
+		`a refused review must not open a pane or start an agent: ${JSON.stringify(received.map((call) => call.method))}`,
+	);
+
+	// The tool's arguments come from a model, so the schema carries the shape.
+	const reviewTool = fleetReviewTool(client, run);
+	assert(reviewTool.name === "fleet_review", `the tool name is the API: ${reviewTool.name}`);
+	assert(
+		(reviewTool.parameters as any).required.join() === "branch,task",
+		`branch and task must be required: ${JSON.stringify((reviewTool.parameters as any).required)}`,
+	);
+	assert(findScope("review") !== undefined && !forkScopeIds().includes("review"), "review is a scope, but not one a fork can be asked for");
+
 	// ------------------------------------------------------------ registration guard
 
 	const registered = (env: Record<string, string | undefined>) => {
@@ -700,7 +846,7 @@ try {
 		process.env = saved;
 		return names.join();
 	};
-	assert((await toolsIn("tui")) === "fleet_fork", "an interactive session must register the fork tool");
+	assert((await toolsIn("tui")) === "fleet_fork,fleet_review", "an interactive session must register both tools");
 	assert((await toolsIn("print")) === "", "a print session must register no tool");
 
 	console.log("pi-herdr-fleet: ok");

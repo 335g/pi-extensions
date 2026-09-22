@@ -243,15 +243,24 @@ async function installInPane(
 /**
  * The agent name for a branch: `[a-z][a-z0-9_-]{0,31}` as herdr requires.
  * Unique agent names are what make `agent get` unambiguous later.
+ *
+ * `suffix` is what keeps two agents on the same branch apart, as a review of a
+ * branch needs: an agent name is taken once, and the second `agent.start` with
+ * the same name is refused rather than retried.
  */
-export function agentName(branch: string): string {
+export function agentName(branch: string, suffix = ""): string {
 	const slug = branch
 		.toLowerCase()
 		.replace(/[^a-z0-9_-]+/g, "-")
 		.replace(/^[-_]+|[-_]+$/g, "");
 	const named = /^[a-z]/.test(slug) ? slug : `fork-${slug}`;
-	return named.slice(0, 32);
+	const tail = suffix === "" ? "" : `-${suffix}`;
+	const head = named.slice(0, AGENT_NAME_MAX - tail.length).replace(/[-_]+$/, "");
+	return `${head === "" ? "fork" : head}${tail}`;
 }
+
+/** herdr's limit, not this extension's choice. */
+const AGENT_NAME_MAX = 32;
 
 // ---------------------------------------------------------------- agent start
 

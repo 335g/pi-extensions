@@ -23,6 +23,7 @@ import { ApprovalBroker, FleetOverlay, type Strings, strings } from "./approvals
 import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient } from "./herdr-client.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
+import { fleetReviewTool, reviewWorktree } from "./review.ts";
 import {
 	type CommandRunner,
 	type EnvPropagation,
@@ -230,6 +231,35 @@ export default function (pi: ExtensionAPI) {
 		for (const warning of env.warnings) ctx.ui.notify(`${t.worktreeWarningPrefix} ${warning}`, "warning");
 	}
 
+	async function reviewCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
+		const t = strings();
+		const [branch, ...tail] = rest;
+		const { flags } = parseFlags(tail, ["task", "base"]);
+		const task = flags.get("task");
+		if (!branch || !task) {
+			ctx.ui.notify(t.reviewUsage, "warning");
+			return;
+		}
+
+		ctx.ui.notify(t.reviewStarting(branch), "info");
+		const reviewed = await reviewWorktree(client, run, {
+			cwd: ctx.cwd,
+			branch,
+			task,
+			base: flags.get("base") || undefined,
+		});
+		if (!reviewed.ok) {
+			ctx.ui.notify(reviewed.error, "error");
+			return;
+		}
+
+		ctx.ui.notify(
+			t.reviewStarted(reviewed.value.branch, reviewed.value.paneId, reviewed.value.agent, t.reviewMaterial(reviewed.value.diffChars, reviewed.value.authorMessages)),
+			reviewed.value.warnings.length > 0 ? "warning" : "info",
+		);
+		for (const warning of reviewed.value.warnings) ctx.ui.notify(`${t.fleetWarningPrefix} ${warning}`, "warning");
+	}
+
 	async function worktreeCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
 		const t = strings();
 		const [verb, branch, ...tail] = rest;
@@ -263,6 +293,7 @@ export default function (pi: ExtensionAPI) {
 			if (group === "recipe") return recipeCommand(rest, ctx);
 			if (group === "worktree") return worktreeCommand(rest, ctx);
 			if (group === "fork") return forkCommand(rest, ctx);
+			if (group === "review") return reviewCommand(rest, ctx);
 			if (group !== undefined) {
 				ctx.ui.notify(strings().unknownSubcommand(group), "warning");
 				return;
@@ -280,9 +311,10 @@ export default function (pi: ExtensionAPI) {
 		// RPC and print modes have no PTY herdr can display and no terminal to
 		// draw the overlay in, so the extension stays inert there.
 		if (ctx.mode !== "tui") return;
-		// The tool is the primary way to fork, so it is registered with the same
-		// guard as everything else: inside herdr, in an interactive session.
+		// The tools are the primary way to run the loop, so they are registered with
+		// the same guard as everything else: inside herdr, in an interactive session.
 		pi.registerTool(fleetForkTool(client, run));
+		pi.registerTool(fleetReviewTool(client, run));
 		broker?.stop();
 		config = readConfig();
 		const t = strings();

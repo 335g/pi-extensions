@@ -277,6 +277,7 @@ export interface Strings {
 	worktreeCreating(branch: string): string;
 	worktreeCreated(branch: string, path: string, workspaceId: string, env: string): string;
 	worktreeWarningPrefix: string;
+	fleetWarningPrefix: string;
 	forkUsage: string;
 	forkCreating(branch: string): string;
 	forkCreated(branch: string, path: string, workspaceId: string, state: string): string;
@@ -285,6 +286,10 @@ export interface Strings {
 	forkNoInstall: string;
 	forkInstalled(command: string): string;
 	forkInstallFailed(command: string, error: string): string;
+	reviewUsage: string;
+	reviewStarting(branch: string): string;
+	reviewStarted(branch: string, paneId: string, agent: string, material: string): string;
+	reviewMaterial(diff: number, messages: number): string;
 }
 
 const JA: Strings = {
@@ -313,6 +318,7 @@ const JA: Strings = {
 	worktreeCreating: (branch) => `worktree ${branch} を作成中…`,
 	worktreeCreated: (branch, path, workspaceId, env) => `worktree ${branch} を作成しました（${workspaceId} · ${path}）— ${env}`,
 	worktreeWarningPrefix: "worktree の環境:",
+	fleetWarningPrefix: "fleet:",
 	forkUsage: '使い方: /fleet fork <branch> --task "<text>" [--base <ref>] [--scope implementation] [--no-install] [--no-start]',
 	forkCreating: (branch) => `fork ${branch} を準備中…`,
 	forkCreated: (branch, path, workspaceId, state) => `fork ${branch}（${workspaceId} · ${path}）— ${state}`,
@@ -321,6 +327,10 @@ const JA: Strings = {
 	forkNoInstall: "install なし（lockfile が無いか --no-install）",
 	forkInstalled: (command) => `${command} 完了`,
 	forkInstallFailed: (command, error) => `${command} 失敗（${error}）`,
+	reviewUsage: '使い方: /fleet review <branch> --task "<text>" [--base <ref>]',
+	reviewStarting: (branch) => `review ${branch} を準備中…`,
+	reviewStarted: (branch, paneId, agent, material) => `review ${branch} を開始しました（pane ${paneId} · agent ${agent} · ${material}）`,
+	reviewMaterial: (diff, messages) => `diff ${diff} 文字 · 作者セッション ${messages} 通`,
 };
 
 const EN: Strings = {
@@ -349,6 +359,7 @@ const EN: Strings = {
 	worktreeCreating: (branch) => `Creating worktree ${branch}...`,
 	worktreeCreated: (branch, path, workspaceId, env) => `Created worktree ${branch} (${workspaceId} · ${path}) — ${env}`,
 	worktreeWarningPrefix: "worktree environment:",
+	fleetWarningPrefix: "fleet:",
 	forkUsage: 'Usage: /fleet fork <branch> --task "<text>" [--base <ref>] [--scope implementation] [--no-install] [--no-start]',
 	forkCreating: (branch) => `Preparing fork ${branch}...`,
 	forkCreated: (branch, path, workspaceId, state) => `Forked ${branch} (${workspaceId} · ${path}) — ${state}`,
@@ -357,6 +368,10 @@ const EN: Strings = {
 	forkNoInstall: "no install (no lockfile, or --no-install)",
 	forkInstalled: (command) => `${command} finished`,
 	forkInstallFailed: (command, error) => `${command} failed (${error})`,
+	reviewUsage: 'Usage: /fleet review <branch> --task "<text>" [--base <ref>]',
+	reviewStarting: (branch) => `Preparing review of ${branch}...`,
+	reviewStarted: (branch, paneId, agent, material) => `Reviewing ${branch} (pane ${paneId} · agent ${agent} · ${material})`,
+	reviewMaterial: (diff, messages) => `diff ${diff} characters · ${messages} author messages`,
 };
 
 export function strings(): Strings {

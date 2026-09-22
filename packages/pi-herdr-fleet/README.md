@@ -37,6 +37,9 @@ project settings (`.pi/settings.json`) instead.
   development environment into it
 - `/fleet fork <branch> --task "<text>" [--base <ref>] [--scope implementation] [--no-install]
   [--no-start]` — fork a worktree, start a Pi session in it, and hand it the task
+- `/fleet review <branch> --task "<text>" [--base <ref>]` — start a read-only reviewer inside that
+  worktree, with the diff and the author's own session
+- `fleet_fork` / `fleet_review` — the same two from an agent, as tools rather than a command line
 
 | Key | Action |
 |-----|--------|
@@ -164,7 +167,10 @@ Five steps, in this order:
 **No conversation history is passed.** The forked session gets the task text, the worktree and
 branch, the constraints, and what "done" means. A discussion is not a brief: anything decided in
 the session that forked it has to be written into the task, and anything left open has to be asked
-again. That prompt lives in `scopes.ts`, and `review` (3b) will add a second one there.
+again. That prompt lives in `scopes.ts`, which holds one seed per scope: `implementation` for a
+fork, `review` for a reviewer. Only a scope that can be built from a task and a worktree is offered
+as `fleet_fork`'s `scope` argument; `review` needs material gathered from an existing worktree, so it
+has its own tool.
 
 That is also why the tool's argument descriptions say so: the model writing the `task` is the one
 who has to write the brief.
@@ -194,6 +200,59 @@ Two things a real pane does that the API does not read like:
   The fork waits for herdr to report a settled agent before sending the task.
 
 Both were measured against herdr and Pi, and both are the reason the steps are ordered this way.
+
+## Reviewing a fork
+
+```
+/fleet review feat/x --task "Add retries to the uploader"
+```
+
+The reviewer is a second Pi session, in a new pane **inside the implementation worktree** — not in a
+second worktree, because git refuses to check out one branch in two places. It is told to be
+read-only: a review that edits the thing under review is not a review. The agent name is the
+branch's, with `-review` appended, because an agent name can only be taken once.
+
+`fleet_review`:
+
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `branch` | string | required | The branch the implementation session worked on |
+| `task` | string | required | The task that session was given |
+| `base` | string | the main checkout's HEAD | Ref the change is measured from |
+
+A fork's job is to pass as little as possible, because the work is a task. A review's job is the
+opposite: the reviewer has the worktree but no way to know what was asked or what the author already
+knew was unfinished. So the seed carries four things:
+
+- `git diff <base>...HEAD`, run in the worktree. The diff is cut at 60000 characters, with the cut
+  spelled out in the seed: a reviewer that silently sees half a change is worse than one that runs
+  `git diff` itself.
+- the task, so the change is judged against the brief rather than against taste.
+- the author's own session, read from the path herdr reports for that pane (`agent_session.value` in
+  `session.snapshot`). Only the assistant's `text` parts are taken — not thinking, not tool calls,
+  which are the diff by another route.
+- the worktree and branch, and the sandbox rules.
+
+The session is a JSONL file that reaches megabytes, so the excerpt is capped at **300 lines and
+20000 characters**, and the caps are applied from the end: the report is the newest message, and the
+reasoning around the last commits matters more than the opening. Only the tail of the file is read
+(4 MB), and a session that was cut says so in the seed. The last message is the author's report;
+the ones before it are how it got there.
+
+The seed fixes the answer's shape for now:
+
+```
+VERDICT: approve | request-changes
+FINDINGS:
+- <path>:<line> <what is wrong>
+```
+
+That is a text convention, and a temporary one. 3c replaces it with a `fleet_verdict` tool call,
+which the reading side can act on without parsing prose.
+
+A review of a branch whose worktree is not open in a workspace is refused: there is nowhere to put
+the reviewer. So is a review with no task. When no Pi session is still running in the worktree there
+is no session to read, and the seed says so rather than looking like an author who wrote nothing.
 
 ## Notifications
 
@@ -226,8 +285,8 @@ herdr is the source of truth. The extension holds no state it cannot rebuild:
   single `pane_id` and rejects a second `events.subscribe` on an already-subscribed connection, so
   a new pane means a new connection. Nothing is accumulated: the set is re-derived from the
   snapshot and compared.
-- The fork loop has no second half yet. Nothing reviews a fork and nothing gates a merge (3b, 3c);
-  a fork is reported once and then left alone. There is no list of the worktrees you have forked.
+- The fork loop has no second half yet. A review is started and its verdict is text that nothing
+  reads yet, and nothing gates a merge (3c). There is no list of the worktrees you have forked.
 - Neither `/fleet worktree create` nor `/fleet fork` moves your focus: the new workspace is built in
   the background.
 - A recipe records one tab. There is no way to save a whole workspace, and no way to restore into
@@ -308,6 +367,12 @@ at all, which the schema catches before the tool runs. Neither may leave a workt
 Unlike `acceptance.sh`, this needs a working model for two reasons: the forked session has to do the
 task, and the observer has to decide to call the tool. The script warns when no API key is in the
 environment.
+
+A review follows: `/fleet review` over the first fork's branch, which puts a second Pi in the author's
+worktree. The checks are on the reviewer's own session file — the task, the diff, the verdict shape,
+and a fragment of the author's report, which is the one thing no `git` command produces — and then on
+the reviewer's last reply, which has to end with a verdict. The worktree has to be clean afterwards,
+because the reviewer was told to be read-only.
 
 There is no `tsconfig.json` in this repo, so the type check is explicit:
 

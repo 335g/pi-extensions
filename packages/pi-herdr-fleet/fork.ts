@@ -15,7 +15,7 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { type HerdrClient, type Outcome, err, ok } from "./herdr-client.ts";
-import { SCOPES, findScope, scopeIds } from "./scopes.ts";
+import { findScope, forkScopeIds, scopeIds } from "./scopes.ts";
 import {
 	type CommandRunner,
 	type EnvPropagation,
@@ -69,7 +69,10 @@ export async function forkWorktree(
 
 	const scopeId = request.scope?.trim() || "implementation";
 	const scope = findScope(scopeId);
-	if (!scope) return err(`fork: unknown scope ${scopeId} (known: ${scopeIds()})`);
+	if (!scope) return err(`fork: unknown scope ${scopeId} (a fork can use ${forkScopeIds().join(", ")})`);
+	// A fork has a task and a worktree and nothing else, so a scope that needs
+	// material gathered from an existing worktree is not one it can start.
+	if (!scope.forkable) return err(`fork: the ${scopeId} scope is not started by a fork (a fork can use ${forkScopeIds().join(", ")})`);
 
 	const base = request.base?.trim() || undefined;
 	const created = await createWorktree(client, run, { cwd: request.cwd, branch, base, label: branch });
@@ -104,8 +107,8 @@ export async function forkWorktree(
 	return ok(forked);
 }
 
-/** The scope ids, so the schema and the registry cannot drift apart. */
-const SCOPE_IDS = SCOPES.map((scope) => scope.id);
+/** The scope ids a fork can use, so the schema and the registry cannot drift apart. */
+const FORK_SCOPE_IDS = forkScopeIds();
 
 const FORK_PARAMETERS = Type.Object({
 	branch: Type.String({ description: "Branch name for the new worktree. Created if it does not exist." }),
@@ -115,7 +118,7 @@ const FORK_PARAMETERS = Type.Object({
 	}),
 	base: Type.Optional(Type.String({ description: "Ref to branch from. Defaults to HEAD." })),
 	scope: Type.Optional(
-		StringEnum(SCOPE_IDS, { description: `What kind of session to fork. Defaults to implementation. Known scopes: ${scopeIds()}.` }),
+		StringEnum(FORK_SCOPE_IDS, { description: `What kind of session to fork. Defaults to implementation. Known scopes: ${scopeIds()}.` }),
 	),
 	install: Type.Optional(
 		Type.Boolean({ description: "Install dependencies in the worktree when it has a lockfile. Defaults to true." }),

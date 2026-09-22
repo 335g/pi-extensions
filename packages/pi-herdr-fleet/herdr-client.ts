@@ -45,6 +45,9 @@ export interface AgentInfo {
 	name?: string | null;
 	agent_status: AgentStatus;
 	state_labels?: Record<string, string>;
+	/** Where the agent's own session lives, when herdr knows. */
+	agent_session?: { value?: string | null } | null;
+	cwd?: string | null;
 }
 
 /**

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# End-to-end acceptance for `/fleet fork`, against a real herdr server, real git,
-# real npm, real direnv and a real Pi TUI. `selfcheck.ts` covers the logic
-# against a fake socket; this covers what only exists when all of those are real.
+# End-to-end acceptance for `/fleet fork`, `/fleet review` and the worktree
+# resolution a fork needs, against a real herdr server, real git, real npm, real
+# direnv and a real Pi TUI. `selfcheck.ts` covers the logic against a fake
+# socket; this covers what only exists when all of those are real.
 #
 # A fork creates real worktrees, workspaces and panes, so this script does not
 # use this repository. It builds its own git repository in a temp directory with
@@ -10,9 +11,10 @@
 # every worktree, workspace and pane it created on the way out. Nothing else is
 # touched: other workspaces and other worktrees are never read or closed.
 #
-# The last check needs a working model, because the point of a fork is that the
-# forked session does the task. Set OPENCODE_API_KEY (or have direnv provide it,
-# as this repository's own `.envrc` does) or the forked sessions will have no
+# A working model is needed from section 3 on, because the point of a fork is
+# that the forked session does the task, and the point of a review is that a
+# second session judges it. Set OPENCODE_API_KEY (or have direnv provide it, as
+# this repository's own `.envrc` does) or the forked sessions will have no
 # provider.
 #
 # Run it from inside a herdr pane (HERDR_ENV=1) anywhere in this repository.
@@ -105,7 +107,7 @@ print(((match or {}).get("agent_session") or {}).get("value", ""))
 ' "$1"
 }
 
-pane_in_workspace() { # pane_in_workspace <workspace> [agent] -> the pane running that agent
+pane_in_workspace() { # pane_in_workspace <workspace> [agent kind] -> the pane running it
 	herdr pane list 2>/dev/null | python3 -c '
 import json, sys
 try:
@@ -116,6 +118,20 @@ want = sys.argv[2] if len(sys.argv) > 2 else ""
 match = next((p for p in panes if p["workspace_id"] == sys.argv[1] and (not want or p.get("agent") == want)), None)
 print((match or {}).get("pane_id", ""))
 ' "$1" "${2:-}"
+}
+
+# Agent *names* are reported by `agent list`, not by `pane list`: a fork and the
+# review of it are two agents in one workspace, and only the name tells them apart.
+pane_by_agent_name() { # pane_by_agent_name <workspace> <agent name> -> its pane
+	herdr agent list 2>/dev/null | python3 -c '
+import json, sys
+try:
+    agents = json.load(sys.stdin)["result"]["agents"]
+except Exception:
+    agents = []
+match = next((a for a in agents if a.get("workspace_id") == sys.argv[1] and a.get("name") == sys.argv[2]), None)
+print((match or {}).get("pane_id", ""))
+' "$1" "$2"
 }
 
 panes_in_workspace() { # panes_in_workspace <workspace> -> every pane id in it
@@ -143,10 +159,10 @@ fork() { # fork <branch> <task> [flags...]
 # appears first; the pane and the agent follow the install, and the notification
 # comes after the seed, so sampling continues past the point where work is done —
 # a toast only lives on screen for a few seconds.
-await_fork() { # await_fork <branch> <yes|no: expect an agent> -> the sampled screen
-	local branch="$1" want_agent="$2" deadline=$((SECONDS + 300)) text="" done_at=""
+await_fork() { # await_fork <branch> <yes|no: expect an agent> [pane] -> the sampled screen
+	local branch="$1" want_agent="$2" pane="${3:-$OBSERVER}" deadline=$((SECONDS + 300)) text="" done_at=""
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		text="$text$(history "$OBSERVER")"
+		text="$text$(history "$pane")"
 		if [ -n "$(worktree_field "$branch" path)" ]; then
 			if [ "$want_agent" = "no" ]; then
 				[ -n "$done_at" ] || done_at=$SECONDS
@@ -158,6 +174,71 @@ await_fork() { # await_fork <branch> <yes|no: expect an agent> -> the sampled sc
 		sleep 0.5
 	done
 	printf '%s' "$text"
+}
+
+# The author's last assistant text: the report the reviewer has to be given.
+assistant_report() { # assistant_report <session file>
+	python3 - "$1" <<'PY'
+import json, sys
+texts = []
+try:
+    for line in open(sys.argv[1]):
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        message = record.get("message") or {}
+        if record.get("type") != "message" or message.get("role") != "assistant":
+            continue
+        for part in message.get("content") or []:
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text", "").strip():
+                texts.append(part["text"].strip())
+except Exception:
+    pass
+print(texts[-1] if texts else "")
+PY
+}
+
+# A fragment of the author's own report inside the reviewer's seed. Decoded here,
+# because the seed is one JSON string and a raw grep would trip over escaping.
+author_report_in_seed() { # author_report_in_seed <author session> <reviewer session>
+	python3 - "$1" "$2" <<'PY'
+import json, sys
+
+
+def decode(path):
+    texts = []
+    try:
+        handle = open(path)
+    except OSError:
+        return texts
+    for line in handle:
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        message = record.get("message") or {}
+        if record.get("type") != "message":
+            continue
+        for part in message.get("content") or []:
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text", "").strip():
+                texts.append(part["text"])
+    return texts
+
+
+author = decode(sys.argv[1])
+reviewer = "\n".join(decode(sys.argv[2]))
+fragment = ""
+for text in reversed(author):
+    for line in text.splitlines():
+        if len(line.strip()) >= 24:
+            fragment = line.strip()
+            break
+    if fragment:
+        break
+print(fragment)
+sys.exit(0 if fragment and fragment in reviewer else 1)
+PY
 }
 
 # The install runs in the pane, after the worktree exists.
@@ -459,6 +540,123 @@ if [ -z "$(worktree_field "$BRANCH" path)" ]; then
 	ok "the call without a task created no worktree"
 else
 	fail "the call without a task created a worktree"
+fi
+
+# ---------------------------------------------------------------- 9. review
+
+# The review is the other half of the loop: the implementation session's branch
+# is read back by a second Pi, in the author's own worktree, with the material a
+# `git diff` cannot produce — what was asked, and what the author said.
+
+say "9. review: a reviewer inside the implementation worktree"
+FULL_BRANCH="$PREFIX/full"
+AUTHOR_SESSION="$(pane_session "$FULL_PANE")"
+AUTHOR_REPORT="$(assistant_report "$AUTHOR_SESSION")"
+if [ -n "$AUTHOR_REPORT" ]; then
+	ok "the author's session has an assistant report to hand over"
+else
+	fail "the author's session has no assistant text ($AUTHOR_SESSION)"
+fi
+
+review() { # review <branch> <task> [flags...]
+	herdr pane send-text "$OBSERVER" "/fleet review $1 --task \"$2\" ${3:-}" >/dev/null 2>&1
+	sleep 0.7
+	herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1
+}
+
+review "$FULL_BRANCH" "$TASK"
+
+# The reviewer is a second agent in the worktree the author worked in: a second
+# worktree cannot hold the same branch, so the branch's own workspace is where it
+# has to be.
+REVIEW_AGENT="$PREFIX-full-review"
+REVIEW_PANE=""
+deadline=$((SECONDS + 180))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	REVIEW_PANE="$(pane_by_agent_name "$FULL_WS" "$REVIEW_AGENT")"
+	[ -n "$REVIEW_PANE" ] && break
+	sleep 1
+done
+if [ -n "$REVIEW_PANE" ]; then
+	ok "the reviewer runs in the author's worktree ($REVIEW_PANE, agent $REVIEW_AGENT)"
+else
+	fail "no reviewer pane appeared in $FULL_WS"
+	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+fi
+
+# The seed is the evidence: it has to arrive as a message, and it has to carry
+# the task, the diff and the author's own words. The screen cannot tell a
+# submitted message from text sitting in an editor.
+REVIEW_SESSION=""
+ON_SCREEN=""
+deadline=$((SECONDS + 180))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	[ -n "$REVIEW_PANE" ] && REVIEW_SESSION="$(pane_session "$REVIEW_PANE")"
+	[ -n "$REVIEW_SESSION" ] && grep -qF 'VERDICT: approve | request-changes' "$REVIEW_SESSION" 2>/dev/null && break
+	sleep 1
+done
+ON_SCREEN="$(cat "$REVIEW_SESSION" 2>/dev/null)"
+check "the seed carries the task the author was given" 'fork-marker.txt containing the word FORKED' "$ON_SCREEN"
+check "the seed carries the diff under review" '\+FORKED' "$ON_SCREEN"
+check "the seed carries the branch's worktree" "$FULL_PATH" "$ON_SCREEN"
+check "the seed fixes the verdict shape" 'VERDICT: approve' "$ON_SCREEN"
+
+# The author's own report is the material no git command produces. A fragment of
+# it inside the reviewer's seed is the proof that the session was read and passed
+# on — both the file path and the text have to be there.
+check "the seed says where the author's session is" "$AUTHOR_SESSION" "$ON_SCREEN"
+FRAGMENT="$(author_report_in_seed "$AUTHOR_SESSION" "$REVIEW_SESSION")"
+if [ $? -eq 0 ] && [ -n "$FRAGMENT" ]; then
+	ok "the seed carries the author's own report ($FRAGMENT)"
+else
+	fail "the author's report did not reach the reviewer (fragment: $FRAGMENT)"
+fi
+
+# Whether the reviewer *answered*, not whether the seed told it to: the seed's own
+# "VERDICT: approve | request-changes" is a user message, so the last assistant
+# text is the only place a real verdict can be.
+reviewer_verdict() { # reviewer_verdict <reviewer session> -> the verdict line it ended with
+	python3 - "$1" <<'PY'
+import json, re, sys
+texts = []
+try:
+    handle = open(sys.argv[1])
+except OSError:
+    handle = []
+for line in handle:
+    try:
+        record = json.loads(line)
+    except Exception:
+        continue
+    message = record.get("message") or {}
+    if record.get("type") != "message" or message.get("role") != "assistant":
+        continue
+    for part in message.get("content") or []:
+        if isinstance(part, dict) and part.get("type") == "text" and part.get("text", "").strip():
+            texts.append(part["text"])
+match = re.search(r"^VERDICT:\s*(approve|request-changes)\s*$", texts[-1] if texts else "", re.M)
+print(match.group(0) if match else "")
+PY
+}
+
+# A review that edits the worktree is not a review. The reviewer is left time to
+# answer first, so this is checked against a session that has finished working.
+VERDICT=""
+deadline=$((SECONDS + 300))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	VERDICT="$(reviewer_verdict "$REVIEW_SESSION")"
+	[ -n "$VERDICT" ] && break
+	sleep 5
+done
+if [ -n "$VERDICT" ]; then
+	ok "the reviewer answers with a verdict ($VERDICT)"
+else
+	fail "the reviewer's last reply has no VERDICT line"
+fi
+if [ -z "$(git -C "$FULL_PATH" status --porcelain 2>/dev/null)" ]; then
+	ok "the reviewer left the worktree alone"
+else
+	fail "the reviewer changed the worktree: $(git -C "$FULL_PATH" status --porcelain | head -3)"
 fi
 
 # ---------------------------------------------------------------- result

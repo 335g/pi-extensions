@@ -37,8 +37,11 @@ pi install npm:@335g/pi-herdr-fleet
   引き継ぐ
 - `/fleet fork <branch> --task "<text>" [--base <ref>] [--scope implementation] [--no-install]
   [--no-start]` — worktree を fork し、その中で Pi セッションを起動し、タスクを渡す
+- `/fleet review <branch> --task "<text>" [--base <ref>]` — その worktree の中で読み取り専用の
+  レビュワーを起動し、diff と作者のセッションを渡す
 - `fleet_fork` ツール — 同じことを agent から呼ぶ。引数は `branch` / `task` / `base` / `scope` /
   `install` / `start`
+- `fleet_review` ツール — 同じことを agent から呼ぶ。引数は `branch` / `task` / `base`
 
 | キー | 動作 |
 |------|------|
@@ -159,7 +162,9 @@ Pi が `No API key found` で即死する。
 **会話履歴は渡さない。** fork されたセッションが受け取るのは、タスク本文、worktree と branch、
 制約、そして「完了」の定義だけ。議論は指示書ではない。fork した側で決めたことはタスク本文に書き写す
 必要があり、決めきれなかったことは向こうでもう一度問うしかない。このプロンプトは `scopes.ts` にあり、
-`review`（3b）もここに増える。
+スコープごとに 1 つずつ入っている。fork が使う `implementation` と、レビュワーの `review`。
+`fleet_fork` の `scope` 引数に出るのは、タスクと worktree だけで組み立てられるスコープだけ。`review` は
+既にある worktree から材料を集める必要があるので、専用のツールから呼ぶ。
 
 ツールの引数の説明がそう書いてあるのはこのため。`task` を書くのは、その指示書を書くべき当のモデル。
 
@@ -188,6 +193,57 @@ install の失敗は失敗ではなく警告にする。worktree と pane は存
   agent を報告するまで待ってからタスクを送る。
 
 どちらも実の herdr と Pi で計測したもので、手順がこの順になっている理由でもある。
+
+## fork をレビューする
+
+```
+/fleet review feat/x --task "uploader にリトライを入れる"
+```
+
+レビュワーは 2 人目の Pi セッションで、**実装 worktree の中の新しい pane** で動く。別の worktree では
+ない。同じブランチを 2 つの worktree にチェックアウトすることは git が拒否する。読み取り専用だと
+指示する。レビュー対象を書き換えるレビューはレビューではない。agent 名はブランチの名前に `-review`
+を付けたものになる。agent 名は 1 つしか取れない。
+
+`fleet_review`:
+
+| 引数 | 型 | 既定 | 内容 |
+|---|---|---|---|
+| `branch` | string | 必須 | 実装セッションが作業したブランチ |
+| `task` | string | 必須 | そのセッションに渡したタスク |
+| `base` | string | main checkout の HEAD | 変更を測る起点 |
+
+fork の仕事はできるだけ渡さないことだった（仕事はタスクだから）。レビューの仕事は逆になる。レビュワー
+は worktree を持っているが、何を頼まれたのかも、作者が何を未完成だと知っていたのかも分からない。
+だから seed は 4 つを運ぶ。
+
+- worktree で実行した `git diff <base>...HEAD`。diff は 60000 文字で切り、切ったことを seed に明記
+  する。半分だけを見たレビュワーは、自分で `git diff` を打つレビュワーより悪い。
+- タスク本文。好みではなく指示書に対して判定させるため。
+- 作者のセッション。herdr がその pane について報告するパス（`session.snapshot` の
+  `agent_session.value`）から読む。抜くのは assistant の `text` パートだけ。thinking もツール呼び出しも
+  取らない。後者は diff を別の経路で見たものにすぎない。
+- worktree とブランチ、そして作業の制約。
+
+セッションは数 MB になる JSONL なので、抜粋は **300 行かつ 20000 文字** で上限を付け、上限は末尾から
+適用する。報告は最新のメッセージであり、直近のコミットの周辺の思考の方が冒頭より効く。読むのは
+ファイルの末尾（4 MB）だけで、切った場合は seed にそう書く。最後のメッセージが作者の報告で、その前が
+そこに至る道筋になる。
+
+seed は今のところ答えの形を固定している。
+
+```
+VERDICT: approve | request-changes
+FINDINGS:
+- <path>:<line> <what is wrong>
+```
+
+これはテキストの規約で、暫定。3c で `fleet_verdict` ツール呼び出しに差し替える。読む側が散文をパース
+せずに扱えるようになる。
+
+worktree がどの workspace にも開かれていないブランチは拒否する。レビュワーを置く場所が無い。タスクの
+無いレビューも拒否する。worktree で Pi セッションがもう動いていない場合、読むセッションが無い。その
+場合は「何も書かなかった作者」に見えないよう、seed にそう書く。
 
 ## 通知
 
@@ -218,8 +274,8 @@ install の失敗は失敗ではなく警告にする。worktree と pane は存
 - pane の集合ごとに購読接続が 1 本要る。herdr の `pane.agent_status_changed` は `pane_id` 単位で、
   購読済みの接続に 2 つ目の `events.subscribe` を送ると接続が閉じられる。そのため pane が増えると
   接続も増える。溜め込みはしない。集合は snapshot から作り直して比較する。
-- 分岐 worktree ループにはまだ後半が無い。fork をレビューするものも、マージを止めるものも無い
-  （3b、3c）。fork は 1 回通知したら、あとは放置される。fork した worktree の一覧も無い。
+- 分岐 worktree ループにはまだ後半が無い。レビューは起動するが、その verdict はまだ誰も読まないテキスト
+  で、マージを止めるものも無い（3c）。fork した worktree の一覧も無い。
 - `/fleet worktree create` も `/fleet fork` もフォーカスを移さない。新しい workspace は裏で作られる。
 - レシピが記録するのは 1 つの tab。workspace 全体を保存する手段は無いし、保存元の tab に復元する
   手段も無い。
@@ -290,6 +346,11 @@ agent に `fleet_fork` を呼ばせ、worktree、pane、observer の会話に残
 
 `acceptance.sh` と違い、ここには動くモデルが要る。fork 先のセッションに作業させるためと、observer に
 ツールを呼ばせるため。API key が環境に無ければ警告を出す。
+
+続けて `/fleet review` を、最初の fork のブランチに対して通す。作者の worktree に 2 人目の Pi が入る。
+見るのはレビュワー自身のセッションファイル — タスク、diff、verdict の形、そして作者の報告の断片。
+報告は `git` では出せない唯一の材料になる。そのあとレビュワーの最後の返答が verdict で終わることを
+見る。指示どおり読み取り専用だったかを、worktree が汚れていないことで確かめる。
 
 このリポジトリに `tsconfig.json` は無いので、型チェックは明示的に実行する:
 

@@ -47,7 +47,7 @@ transport は `HERDR_SOCKET_PATH` の unix socket（Windows は `\\.\pipe\<path>
 - `request(method, params, timeoutMs)` — 単発要求
 - `subscribe(types, onEvent)` — `events.subscribe` の常駐接続
 - `snapshot()` — `session.snapshot`
-- `agentRead(target, source, lines)` / `agentSendKeys(target, keys)` / `agentPrompt(target, text)`
+- `agentRead(target, source, lines)` / `paneSendInput(paneId, text, keys)` / `paneSendKeys(paneId, keys)`
 - `selfPaneId()` — `HERDR_PANE_ID`
 
 原則:
@@ -64,11 +64,25 @@ transport は `HERDR_SOCKET_PATH` の unix socket（Windows は `\\.\pipe\<path>
 1. blocked になった pane を一覧に追加する（`pane_id` / `workspace_id` / agent 名 / `state_labels`）
 2. 質問文を `agent.read`（`source: "detection"`、空なら `"visible"`）で取得して保持する
 3. overlay で一覧表示。選択すると本文と回答入力が出る
-4. 回答は 2 経路
-   - 生キー（`1` / `enter` / `esc` / `up` …）→ `agent.send_keys`
-   - テキスト → `agent.prompt`
+4. 回答は 2 経路。どちらも **pane API** を使う（理由は下）
+   - 生キー（`1` / `enter` / `esc` / `up` …）→ `pane.send_keys`
+   - テキスト → `pane.send_input`（テキスト + Enter を 1 回の順序ある送信として）
 5. `blocked` 以外に遷移したら一覧から除く
 6. 自分自身の pane（`HERDR_PANE_ID`）は除外する
+
+### なぜ agent API ではなく pane API か
+
+実 pane の受入試験（`acceptance.sh`）で判明した。当初の設計は `agent.send_keys` と
+`agent.prompt` を使うとしていたが、**どちらもこの用途では herdr に拒否される**。
+
+- `agent.prompt` は herdr が blocked と報告している pane を `agent_blocked` で拒否する。
+  これはこの overlay が答えられる pane の**すべて**にあたるので、原理的に使えない
+- `agent.send_keys` は `pane.report_agent` で報告された agent を `agent_not_ready` で拒否する。
+  hook や plugin はその経路で状態を報告するので、一覧に載る pane はまさにこれにあたる
+- `pane.send_input` / `pane.send_keys` にはどちらの検査も無く、空白も保って順序どおり届く
+
+承認ダイアログに答えるのは「その pane への意図的な生入力」なので pane 側が正しい層。
+`agent.read` は報告された pane でも通るので agent 側のままにしている。
 
 UI:
 
@@ -146,6 +160,8 @@ packages/pi-herdr-fleet/
   approvals.ts      ①
   recipes.ts        レシピ
   worktree.ts       worktree 作成と環境の引き継ぎ
+  selfcheck.ts      fake herdr サーバに対するロジックの検証
+  acceptance.sh     実 pane の受入試験
   README.md
   README.ja.md
   package.json
@@ -156,8 +172,24 @@ packages/pi-herdr-fleet/
 ## 検証
 
 - `HERDR_ENV` の無い環境で拡張が無害に終了すること
-- blocked の検知 → overlay → 回答送信を、テスト用 pane を 1 つ立てて確認する
+- blocked の検知 → overlay → 回答送信の実 pane での通し確認 → `acceptance.sh`（実施済み）
 - socket を切って再接続と再同期が動くこと
 - `.env` と `.envrc` を持つリポジトリで worktree を切り、環境変数が引き継がれること
 - 元の `.envrc` が allow されていない場合、新しい worktree で allow しないこと
 - `tsc --noEmit` が通ること
+
+実 pane の受入試験は `packages/pi-herdr-fleet/acceptance.sh`。subject（`report-agent` で
+blocked にした shell）・observer（この拡張を読み込んだ Pi）・呼び出し元の 3 pane を作り、
+通知、overlay の一覧、質問文、回答の 2 経路を通す。自分が作った pane だけ閉じる。
+
+## 既知の制約と開発時の注意
+
+- `/reload` で拡張の新しいコードが反映されない（jiti のモジュールキャッシュと思われる）。
+  実装を直したら observer の pane を立て直して確認する
+- observer は `-ne` で隔離する。他の拡張が `ctrl+shift+a` を取ると試験が壊れる
+- `report-agent` で合成した subject では、`agent.read --source detection` は承認 UI の本文ではなく
+  直近のスクロールバック全体を返す。実エージェントなら herdr の detection がダイアログ本文を返す。
+  合成 subject の性質なのでコードは合わせていない。詳細画面が冗長に感じたら末尾 N 行に切る改善がある
+- 通知の確認は Pi のトーストが `recent-unwrapped` に残ることに依存している。試験の中で唯一
+  タイミングに依存する検査。失敗したら `herdr pane wait-output` に切り替える
+- 実エージェントの承認 UI に対する `pane.send_input` は未検証（subject は合成した blocked）

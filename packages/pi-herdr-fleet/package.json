@@ -1,7 +1,7 @@
 {
   "name": "@335g/pi-herdr-fleet",
   "version": "0.0.1",
-  "description": "Approval broker between herdr panes and Pi, plus layout recipes and worktree creation with the development environment carried over.",
+  "description": "Approval broker between herdr panes and Pi, plus layout recipes, worktree creation with the development environment carried over, and forking a worktree with a task.",
   "type": "module",
   "keywords": [
     "pi",
@@ -21,7 +21,8 @@
     "herdr-client.ts",
     "approvals.ts",
     "recipes.ts",
-    "worktree.ts"
+    "worktree.ts",
+    "scopes.ts"
   ],
   "publishConfig": {
     "access": "public"

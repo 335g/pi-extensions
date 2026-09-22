@@ -15,8 +15,19 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 
 import { ApprovalBroker, FleetOverlay, strings } from "./approvals.ts";
 import { HerdrClient, type Outcome, type SubscribeEvent } from "./herdr-client.ts";
+import { tokenize } from "./index.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
-import { type CommandResult, type CommandRunner, createWorktree, propagateEnv } from "./worktree.ts";
+import { findScope, scopeIds } from "./scopes.ts";
+import {
+	type CommandResult,
+	type CommandRunner,
+	agentName,
+	createWorktree,
+	installPlan,
+	prepareWorktree,
+	propagateEnv,
+	startAgent,
+} from "./worktree.ts";
 
 const assert = (condition: boolean, message: string) => {
 	if (!condition) throw new Error(message);
@@ -81,6 +92,10 @@ const received: { method: string; params: any }[] = [];
 const openSubscriptions = new Set<net.Socket>();
 /** Set to have the next `events.subscribe` refused, the way herdr refuses a vanished pane. */
 let refuseNextSubscribe = false;
+/** What `pane.wait_for_output` reports as the pane's snapshot. */
+let waitText = "";
+/** `agent.start` failures, consumed one per call; empty means it succeeds. */
+let startFaults: { code: string; message: string }[] = [];
 
 const server = net.createServer((socket) => {
 	let buffer = "";
@@ -138,10 +153,25 @@ const server = net.createServer((socket) => {
 							type: "worktree_created",
 							workspace: { workspace_id: "w9" },
 							tab: {},
-							root_pane: {},
+							root_pane: { pane_id: "w9:p1" },
 							worktree: { path: join(scratch, "checkout"), branch: request.params.branch, label: request.params.label ?? "", is_bare: false, is_detached: false, is_prunable: false, is_linked_worktree: true },
 						},
 					});
+					break;
+				case "pane.split":
+					reply({ result: { type: "pane_info", pane: { pane_id: "w9:p2", workspace_id: "w9" } } });
+					break;
+				case "pane.wait_for_output":
+					reply({ result: { type: "output_matched", pane_id: request.params.pane_id, read: { text: waitText } } });
+					break;
+				case "agent.start": {
+					const fault = startFaults.shift();
+					if (fault) reply({ error: fault });
+					else reply({ result: { type: "agent_started", agent: { pane_id: request.params.pane_id, name: request.params.name, agent: "pi", agent_status: "unknown" } } });
+					break;
+				}
+				case "agent.wait":
+					reply({ result: { type: "agent_settled", agent: { pane_id: request.params.target, agent_status: "idle" } } });
 					break;
 				default:
 					break; // "silent": never answers, so the timeout path is reachable
@@ -172,6 +202,7 @@ try {
 
 	const failure = await client.request("boom", {});
 	assert(!failure.ok && failure.error.includes("not found"), `an error response must degrade: ${JSON.stringify(failure)}`);
+	assert(!failure.ok && failure.code === "pane_not_found", `herdr's error code must survive: ${JSON.stringify(failure)}`);
 
 	const unknown = await client.request("no.such_method", {});
 	assert(!unknown.ok, "a method the server does not know must degrade");
@@ -430,6 +461,114 @@ try {
 		tolerated.ok && readFileSync(join(scratch, "checkout", ".env"), "utf8") === "TOKEN=2\n" && tolerated.value.env.warnings.length > 0,
 		`a propagation failure is a warning, not a failure: ${JSON.stringify(tolerated)}`,
 	);
+
+	// ------------------------------------------------------------ fork preparation
+
+	// The lockfile, and only the lockfile, decides the installer.
+	const lockRoot = mkdtempSync(join(scratch, "lockfile-"));
+	assert(installPlan(lockRoot) === undefined, "a checkout with no lockfile has nothing to install");
+	writeFileSync(join(lockRoot, "package-lock.json"), "{}");
+	assert(installPlan(lockRoot)?.command === "npm install", "package-lock.json selects npm");
+	writeFileSync(join(lockRoot, "pnpm-lock.yaml"), "");
+	assert(installPlan(lockRoot)?.manager === "pnpm", "pnpm wins over npm when both are present");
+	rmSync(join(lockRoot, "pnpm-lock.yaml"));
+	writeFileSync(join(lockRoot, "yarn.lock"), "");
+	assert(installPlan(lockRoot)?.manager === "yarn", "yarn.lock selects yarn");
+	rmSync(join(lockRoot, "yarn.lock"));
+	writeFileSync(join(lockRoot, "bun.lockb"), "");
+	assert(installPlan(lockRoot)?.manager === "bun", "bun.lockb selects bun");
+
+	// herdr requires `[a-z][a-z0-9_-]{0,31}`; a branch is not that yet.
+	assert(agentName("feat/pi-herdr-fleet-fork") === "feat-pi-herdr-fleet-fork", `a branch becomes a slug: ${agentName("feat/pi-herdr-fleet-fork")}`);
+	assert(agentName("123-fix") === "fork-123-fix", `a name that starts with a digit needs a letter: ${agentName("123-fix")}`);
+	assert(agentName("x".repeat(80)).length === 32, "an agent name is cut at 32 characters");
+	for (const branch of ["Feat/Ünicode Branch!", "---", "", "feat/x"]) {
+		assert(/^[a-z][a-z0-9_-]{0,31}$/.test(agentName(branch)), `every name must satisfy herdr: ${branch} -> ${agentName(branch)}`);
+	}
+
+	// The scope registry: one message, built from the task and the worktree.
+	const implementation = findScope("implementation");
+	assert(implementation !== undefined, "the implementation scope must be registered");
+	assert(findScope("review") === undefined, "review is 3b, not 3a");
+	assert(scopeIds() === "implementation", `the registry lists exactly 3a's scopes: ${scopeIds()}`);
+	const seed = implementation!.seed({ task: "TASK-MARKER", path: "/wt", branch: "feat/x", base: "main" });
+	assert(
+		["TASK-MARKER", "/wt", "feat/x", "main", "Commit"].every((part) => seed.includes(part)),
+		`the seed carries the task, the worktree and the done condition: ${seed}`,
+	);
+	assert(seed.split("\n").filter((line) => line.startsWith("worktree: ")).length === 1, "the worktree is named once");
+	assert(implementation!.deliverable.length > 0 && seed.includes(implementation!.deliverable), "the deliverable is part of the brief");
+
+	// Quoted arguments survive the command line: `--task "two words"` is one argument.
+	assert(tokenize('fork feat/x --task "two words"').join("|") === "fork|feat/x|--task|two words", "a double-quoted argument is one token");
+	assert(tokenize("--task 'single quoted'").join("|") === "--task|single quoted", "a single-quoted argument is one token");
+	assert(tokenize("  a   b  ").join("|") === "a|b", "plain whitespace still splits");
+	assert(tokenize("").length === 0, "an empty line has no arguments");
+
+	// prepareWorktree: split the pane, then install in it when a lockfile says to.
+	const installs = () => received.filter((call) => call.method === "pane.send_input");
+	waitText = "FLEET_INSTALL_1=0\n";
+	let pane = unwrap(
+		await prepareWorktree(client, { path: lockRoot, workspaceId: "w9", rootPaneId: "w9:p1", install: true, timeoutMs: 5_000 }),
+		"prepareWorktree",
+	);
+	assert(pane.paneId === "w9:p2", `the pane id comes from pane.split: ${pane.paneId}`);
+	assert(pane.install?.ok === true && pane.install.command === "bun install", `a finished install is reported: ${JSON.stringify(pane.install)}`);
+	const split = received.filter((call) => call.method === "pane.split").at(-1)!;
+	assert(
+		split.params.cwd === lockRoot && split.params.workspace_id === "w9" && split.params.target_pane_id === "w9:p1" && split.params.focus === false,
+		`the pane opens in the worktree without stealing focus: ${JSON.stringify(split.params)}`,
+	);
+	const install = installs().at(-1)!;
+	assert(install.params.text.includes("FLEET_INSTALL_$$"), "the marker is built at runtime, never typed literally");
+	assert(!/FLEET_INSTALL_[0-9]/.test(install.params.text), "the echoed command must not match the marker regex itself");
+	assert(install.params.text.includes("bun install"), `the lockfile's installer is the one typed: ${install.params.text}`);
+
+	// A failing install is a reported outcome, not an exception.
+	waitText = "FLEET_INSTALL_1=7\n";
+	pane = unwrap(await prepareWorktree(client, { path: lockRoot, install: true, timeoutMs: 5_000 }), "prepareWorktree");
+	assert(pane.install?.ok === false && (pane.install.error ?? "").includes("7"), `a non-zero exit is a failure: ${JSON.stringify(pane.install)}`);
+
+	waitText = "no marker here\n";
+	pane = unwrap(await prepareWorktree(client, { path: lockRoot, install: true, timeoutMs: 5_000 }), "prepareWorktree");
+	assert(pane.install?.ok === false, `a snapshot without the marker is a failure: ${JSON.stringify(pane.install)}`);
+
+	// Nothing to install, and `--no-install`, both stop before typing anything.
+	const bare = mkdtempSync(join(scratch, "bare-"));
+	received.length = 0;
+	pane = unwrap(await prepareWorktree(client, { path: bare, workspaceId: "w9", install: true }), "prepareWorktree");
+	assert(pane.install === undefined && !received.some((call) => call.method === "pane.wait_for_output"), "no lockfile means no install");
+	assert(received.some((call) => call.method === "pane.split"), "the pane is still opened without a lockfile");
+
+	received.length = 0;
+	pane = unwrap(await prepareWorktree(client, { path: lockRoot, install: false }), "prepareWorktree");
+	assert(pane.install === undefined && installs().length === 0, "--no-install types nothing at all");
+
+	// startAgent: herdr reports the pane busy for a moment after a command, and
+	// reports the agent ready before it accepts input.
+	received.length = 0;
+	startFaults = [{ code: "agent_pane_busy", message: "agent target pane is not an available shell" }];
+	unwrap(await startAgent(client, { paneId: "w9:p2", name: "feat-x" }), "startAgent");
+	const starts = received.filter((call) => call.method === "agent.start");
+	assert(starts.length === 2, `a busy pane must be retried: ${starts.length} attempts`);
+	assert(
+		starts[0]!.params.name === "feat-x" && starts[0]!.params.kind === "pi" && starts[0]!.params.pane_id === "w9:p2",
+		`agent.start must name the agent and the pane: ${JSON.stringify(starts[0]!.params)}`,
+	);
+	assert(
+		received.some((call) => call.method === "agent.wait" && call.params.target === "w9:p2" && call.params.until.join() === "idle,done,blocked"),
+		"the agent must settle before a prompt is typed into it",
+	);
+
+	// A failure a retry cannot fix is reported instead of retried.
+	received.length = 0;
+	startFaults = [{ code: "agent_name_taken", message: "agent name is already in use" }];
+	const refused = await startAgent(client, { paneId: "w9:p2", name: "feat-x" });
+	assert(
+		!refused.ok && refused.error.includes("already in use") && refused.code === "agent_name_taken",
+		`an unfixable failure must be reported with its code: ${JSON.stringify(refused)}`,
+	);
+	assert(received.filter((call) => call.method === "agent.start").length === 1, "an unfixable failure must not be retried");
 
 	// ------------------------------------------------------------ registration guard
 

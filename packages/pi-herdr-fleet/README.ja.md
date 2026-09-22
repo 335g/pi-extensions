@@ -5,10 +5,10 @@
 [herdr](https://herdr.dev) の pane と Pi の間の承認ブローカー。herdr はどの pane が人間の返答を
 待っているかを知っている。`/fleet` はその一覧を、いま見ている pane の上に overlay で出し、pane を
 切り替えずに blocked のエージェントへ答える。同じコマンドで tab のレイアウトを保存・復元し、
-git 管理外の開発環境を引き継いだ worktree も作れる。
+git 管理外の開発環境を引き継いだ worktree も作れる。さらにその worktree を fork できる。worktree を
+切り、その中で Pi セッションを起動し、タスクを 1 通で渡す。
 
-Phase 2 は herdr クライアント層、承認ブローカー、レシピ、worktree 作成まで。分岐 worktree ループが
-次のフェーズ。
+Phase 3a は `/fleet fork` まで。レビュー（3b）とマージゲート（3c）はこれから。
 
 ## 動作条件
 
@@ -34,6 +34,8 @@ pi install npm:@335g/pi-herdr-fleet
 - `/fleet recipe ls` — 保存済みのレシピを一覧する
 - `/fleet worktree create <branch> [--base <ref>] [--label <text>]` — worktree を作り、開発環境を
   引き継ぐ
+- `/fleet fork <branch> --task "<text>" [--base <ref>] [--scope implementation] [--no-install]
+  [--no-start]` — worktree を fork し、その中で Pi セッションを起動し、タスクを渡す
 
 | キー | 動作 |
 |------|------|
@@ -107,6 +109,59 @@ agent を拒否する（`agent_not_ready`）。hook や plugin はその経路�
 worktree には git が追跡しているものしか来ないため、このコピーが要る。無いと、切った直後に起動した
 Pi が `No API key found` で即死する。
 
+## worktree を fork する
+
+```
+/fleet fork feat/x --task "uploader にリトライを入れる"
+```
+
+手順はこの順で 5 つ。
+
+1. 新しいブランチの worktree を作り、上と同じように `.env*` / `.envrc` を引き継ぐ。
+2. **準備** — checkout に lockfile があれば、その中で依存を install する。installer は lockfile で
+   決まる（`pnpm-lock.yaml` → pnpm、`yarn.lock` → yarn、`bun.lockb` / `bun.lock` → bun、
+   `package-lock.json` → npm）。lockfile が無ければ何もしない。コマンドは新しい pane の shell に
+   打ち込み、完了を herdr に待たせる。install の出力は、依頼したセッションの中ではなく、見に行ける
+   画面に出る。`--no-install` で飛ばせる。
+3. worktree の workspace に pane を作り（`pane.split` に `--cwd <worktree>` と `--no-focus`）、
+   その中で Pi を起動する。agent 名は branch から作り、herdr の `[a-z][a-z0-9_-]{0,31}` に正規化
+   して 32 文字で切る。
+4. タスクを **1 通のメッセージ** として `pane.send_input` で送る。`agent.prompt` は使わない。
+   herdr が blocked と報告している pane を拒否する点で承認ブローカーと同じ層の問題であり、
+   セッションへのプロンプト入力は pane 側の仕事。
+5. worktree path / branch / workspace / pane / agent 名を通知で返す。
+
+`--no-start` は手順 1 で止まる。worktree と環境だけができ、その中では何も動かない。
+
+### タスクが唯一の指示書
+
+**会話履歴は渡さない。** fork されたセッションが受け取るのは、タスク本文、worktree と branch、
+制約、そして「完了」の定義だけ。議論は指示書ではない。fork した側で決めたことはタスク本文に書き写す
+必要があり、決めきれなかったことは向こうでもう一度問うしかない。このプロンプトは `scopes.ts` にあり、
+`review`（3b）もここに増える。
+
+implementation スコープがセッションに伝えること:
+
+- この worktree の中だけで作業し、他の checkout には触らない
+- このブランチにコミットする。worktree の作成、agent の起動、push はしない
+- タスクが決めていないことは推測せず聞く
+- 終わったらコミットと短い報告だけを返す（diff は貼らない）
+
+install の失敗は失敗ではなく警告にする。worktree と pane は存在するので、通知で何が起きたかを伝える。
+環境の引き継ぎの警告も同じ扱い。
+
+### fork が待つ理由
+
+実の pane が、API の見た目どおりに動かない 2 点がある。
+
+- `agent.start` は、pane の shell がまだ認識されていない間 `agent_pane_busy` を返す。ここでは install
+  をその pane で実行した直後なので普通に起きる。fork はリトライする。
+- herdr が agent を ready と報告してから、実際に入力を受け付けるまでに 3 秒ほどある。この間に送った
+  プロンプトは入力欄に残り、送信されない。末尾の Enter が単に失われる。fork は herdr が settled な
+  agent を報告するまで待ってからタスクを送る。
+
+どちらも実の herdr と Pi で計測したもので、手順がこの順になっている理由でもある。
+
 ## 通知
 
 新しく blocked になった pane は pi の通知を出す。切るには:
@@ -136,8 +191,9 @@ Pi が `No API key found` で即死する。
 - pane の集合ごとに購読接続が 1 本要る。herdr の `pane.agent_status_changed` は `pane_id` 単位で、
   購読済みの接続に 2 つ目の `events.subscribe` を送ると接続が閉じられる。そのため pane が増えると
   接続も増える。溜め込みはしない。集合は snapshot から作り直して比較する。
-- 分岐 worktree ループ（Phase 3）は未実装。`/fleet worktree create` は worktree を作って環境を
-  引き継ぐだけで、そこで何かを起動することはせず、workspace にフォーカスも移さない。
+- 分岐 worktree ループにはまだ後半が無い。fork をレビューするものも、マージを止めるものも無い
+  （3b、3c）。fork は 1 回通知したら、あとは放置される。fork した worktree の一覧も無い。
+- `/fleet worktree create` も `/fleet fork` もフォーカスを移さない。新しい workspace は裏で作られる。
 - レシピが記録するのは 1 つの tab。workspace 全体を保存する手段は無いし、保存元の tab に復元する
   手段も無い。
 - 環境マネージャは direnv しか見ていない。mise や asdf の類いは `.envrc` 経由でしか引き継がれない。
@@ -159,6 +215,13 @@ node packages/pi-herdr-fleet/selfcheck.ts
 出られないこと、そして direnv を差し替えて、allow されていない元の `.envrc` は新しい worktree でも
 allow されず、allow 済みのものは引き継がれること。
 
+fork の部品も同じように確認する。installer を決めるのが lockfile だけで、lockfile の無い checkout には
+install しないこと、`--no-install` が何も打ち込まないこと、install の目印がコマンドの echo に一致
+しないこと（pane は打った文字をそのまま echo するので、目印をリテラルで書くと install が走る前に一致
+してしまう）、0 以外の終了が失敗として報告されること、busy な pane はリトライする一方で直らない
+`agent.start` の失敗はリトライしないこと、何かを打ち込む前に agent の settled を待つこと。seed と
+agent 名は純粋関数なので、タスク・worktree・branch が出来上がる文字列に入ることを見る。
+
 ### 受入試験
 
 ```sh
@@ -173,6 +236,23 @@ packages/pi-herdr-fleet/acceptance.sh
 
 subject の状態を実エージェントではなく報告で作るので、実行は決定的になる。モデルに答えさせずに、
 socket・購読・overlay・subject の `read` へのキー配送という経路全体を実際に通す。
+
+```sh
+packages/pi-herdr-fleet/acceptance-fork.sh
+```
+
+`/fleet fork` を、同じ実スタックに実の git と実の npm を足して通す。fork は本物の worktree を作るので、
+このスクリプトはこのリポジトリには触らない。一時ディレクトリに自前の git リポジトリ（lockfile の無い
+base commit 付き）と、observer Pi 用の自前の workspace を作る。作った worktree・workspace・pane と
+direnv の trust はすべて後始末し、それ以外は読むことも閉じることもない。
+
+fork 4 つで確認する。worktree・環境のコピー・direnv の trust・install・pane・Pi・seed がすべて起きる
+こと、fork されたセッションが実際にタスクをこなしてコミットすること、lockfile の無い checkout には
+install しないこと、`--no-install` が lockfile を無視すること、`--no-start` が何も動いていない worktree
+を残すこと。
+
+`acceptance.sh` と違い、最後の確認には動くモデルが要る。fork の目的が「fork 先のセッションに作業させる
+こと」だから。API key が環境に無ければ警告を出す。
 
 このリポジトリに `tsconfig.json` は無いので、型チェックは明示的に実行する:
 

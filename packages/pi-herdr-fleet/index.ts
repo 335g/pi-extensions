@@ -19,10 +19,19 @@ import { join } from "node:path";
 
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 
-import { ApprovalBroker, FleetOverlay, strings } from "./approvals.ts";
+import { ApprovalBroker, FleetOverlay, type Strings, strings } from "./approvals.ts";
 import { HerdrClient } from "./herdr-client.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
-import { type CommandRunner, type EnvPropagation, createWorktree } from "./worktree.ts";
+import { findScope, scopeIds } from "./scopes.ts";
+import {
+	type CommandRunner,
+	type EnvPropagation,
+	type InstallOutcome,
+	agentName,
+	createWorktree,
+	prepareWorktree,
+	startAgent,
+} from "./worktree.ts";
 
 interface Config {
 	/** Announce panes that newly became blocked. */
@@ -66,12 +75,47 @@ function parseFlags(args: string[], known: string[]): { flags: Map<string, strin
 	return { flags, rest };
 }
 
+/**
+ * Split a command line into arguments, keeping quoted runs together.
+ * `--task "two words"` has to arrive as one argument, not two.
+ */
+export function tokenize(args: string): string[] {
+	const tokens: string[] = [];
+	let current = "";
+	let quote: string | undefined;
+	for (const character of args) {
+		if (quote !== undefined) {
+			if (character === quote) quote = undefined;
+			else current += character;
+			continue;
+		}
+		if (character === '"' || character === "'") {
+			quote = character;
+			continue;
+		}
+		if (/\s/.test(character)) {
+			if (current !== "") tokens.push(current);
+			current = "";
+			continue;
+		}
+		current += character;
+	}
+	if (current !== "") tokens.push(current);
+	return tokens;
+}
+
 function envSummary(env: EnvPropagation): string {
 	const parts: string[] = [];
 	if (env.copied.length > 0) parts.push(`copied ${env.copied.join(", ")}`);
 	if (env.skipped.length > 0) parts.push(`kept ${env.skipped.join(", ")}`);
 	parts.push(env.allowed ? "direnv allowed" : "direnv not allowed");
 	return parts.join("; ");
+}
+
+function installSummary(install: InstallOutcome | undefined, t: Strings): string {
+	if (!install) return t.forkNoInstall;
+	if (install.ok) return t.forkInstalled(install.command);
+	return t.forkInstallFailed(install.command, install.error ?? "");
 }
 
 export default function (pi: ExtensionAPI) {
@@ -154,6 +198,69 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	async function forkCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
+		const t = strings();
+		const [branch, ...tail] = rest;
+		const { flags } = parseFlags(tail, ["task", "base", "scope", "no-install", "no-start"]);
+		const task = flags.get("task");
+		const scopeId = flags.get("scope") || "implementation";
+		const scope = findScope(scopeId);
+		if (!branch || !task) {
+			ctx.ui.notify(t.forkUsage, "warning");
+			return;
+		}
+		if (!scope) {
+			ctx.ui.notify(t.forkUnknownScope(scopeId, scopeIds()), "warning");
+			return;
+		}
+
+		const base = flags.get("base") || undefined;
+		ctx.ui.notify(t.forkCreating(branch), "info");
+		const created = await createWorktree(client, run, { cwd: ctx.cwd, branch, base, label: branch });
+		if (!created.ok) {
+			ctx.ui.notify(created.error, "error");
+			return;
+		}
+		const { env, path, workspaceId, rootPaneId } = created.value;
+
+		// `--no-start` stops here: the worktree and its environment exist, and
+		// nothing is running in them.
+		if (flags.has("no-start")) {
+			ctx.ui.notify(t.forkCreated(branch, path, workspaceId, t.forkNoStart), "info");
+			for (const warning of env.warnings) ctx.ui.notify(`${t.worktreeWarningPrefix} ${warning}`, "warning");
+			return;
+		}
+
+		const prepared = await prepareWorktree(client, {
+			path,
+			workspaceId,
+			rootPaneId,
+			install: !flags.has("no-install"),
+		});
+		if (!prepared.ok) {
+			ctx.ui.notify(t.forkFailed(path, prepared.error), "error");
+			return;
+		}
+		const { install, paneId } = prepared.value;
+
+		// The pane surface, not `agent.prompt`: see §2 of DESIGN.md.
+		const agent = agentName(branch);
+		const started = await startAgent(client, { paneId, name: agent });
+		if (!started.ok) {
+			ctx.ui.notify(t.forkFailed(path, started.error), "error");
+			return;
+		}
+
+		const sent = await client.paneSendInput(paneId, scope.seed({ task, path, branch, base }));
+		if (!sent.ok) {
+			ctx.ui.notify(t.forkSeedFailed(path, sent.error), "error");
+			return;
+		}
+
+		ctx.ui.notify(t.forkCreated(branch, path, workspaceId, t.forkRunning(paneId, agent, installSummary(install, t))), install?.ok === false ? "warning" : "info");
+		for (const warning of env.warnings) ctx.ui.notify(`${t.worktreeWarningPrefix} ${warning}`, "warning");
+	}
+
 	async function worktreeCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
 		const t = strings();
 		const [verb, branch, ...tail] = rest;
@@ -180,12 +287,13 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("fleet", {
-		description: "Panes waiting on a human, layout recipes, and worktrees",
+		description: "Panes waiting on a human, layout recipes, worktrees, and forks",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") return;
-			const [group, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+			const [group, ...rest] = tokenize(args);
 			if (group === "recipe") return recipeCommand(rest, ctx);
 			if (group === "worktree") return worktreeCommand(rest, ctx);
+			if (group === "fork") return forkCommand(rest, ctx);
 			if (group !== undefined) {
 				ctx.ui.notify(strings().unknownSubcommand(group), "warning");
 				return;

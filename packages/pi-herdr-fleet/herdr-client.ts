@@ -47,14 +47,19 @@ export interface AgentInfo {
 	state_labels?: Record<string, string>;
 }
 
-export type Outcome<T> = { ok: true; value: T } | { ok: false; error: string };
+/**
+ * A request either produced a value or degraded. `code` is herdr's own error
+ * code when it sent one (`agent_pane_busy`, `pane_not_found`, ...): the message
+ * is for a human, so nothing should branch on its wording.
+ */
+export type Outcome<T> = { ok: true; value: T } | { ok: false; error: string; code?: string };
 
 export function ok<T>(value: T): Outcome<T> {
 	return { ok: true, value };
 }
 
-export function err<T = never>(error: string): Outcome<T> {
-	return { ok: false, error };
+export function err<T = never>(error: string, code?: string): Outcome<T> {
+	return code === undefined ? { ok: false, error } : { ok: false, error, code };
 }
 
 /** A pushed event, or the signal that the stream has to be rebuilt. */
@@ -276,6 +281,9 @@ function parseJson(line: string): any | undefined {
 function parseResponse(line: string, method: string): Outcome<any> {
 	const parsed = parseJson(line);
 	if (!parsed) return err(`${method}: malformed response`);
-	if (parsed.error) return err(`${method}: ${parsed.error.message ?? parsed.error.code ?? "error"}`);
+	if (parsed.error) {
+		const code = typeof parsed.error.code === "string" ? parsed.error.code : undefined;
+		return err(`${method}: ${parsed.error.message ?? code ?? "error"}`, code);
+	}
 	return ok(parsed.result);
 }

@@ -5,10 +5,10 @@
 An approval broker between [herdr](https://herdr.dev) panes and Pi. herdr knows which panes are
 waiting on a human; `/fleet` shows that list as an overlay on the pane you are already looking at,
 and answers a blocked agent without switching panes. The same command saves and restores tab
-layouts, and creates worktrees with the untracked development environment carried over.
+layouts, creates worktrees with the untracked development environment carried over, and forks one:
+a worktree, a Pi session in it, and a task handed to that session.
 
-Phase 2 covers the herdr client, the approval broker, layout recipes, and worktree creation. The
-fork/worktree loop is the next phase.
+Phase 3a adds `/fleet fork`. Review (3b) and the merge gate (3c) are still to come.
 
 ## Requirements
 
@@ -35,6 +35,8 @@ project settings (`.pi/settings.json`) instead.
 - `/fleet recipe ls` — list the stored recipes
 - `/fleet worktree create <branch> [--base <ref>] [--label <text>]` — make a worktree and carry the
   development environment into it
+- `/fleet fork <branch> --task "<text>" [--base <ref>] [--scope implementation] [--no-install]
+  [--no-start]` — fork a worktree, start a Pi session in it, and hand it the task
 
 | Key | Action |
 |-----|--------|
@@ -114,6 +116,59 @@ development environment into the new checkout:
 This exists because a worktree gets only what git tracks. Without the copy, the Pi started in a
 fresh worktree dies on startup with `No API key found`.
 
+## Forking work
+
+```
+/fleet fork feat/x --task "Add retries to the uploader"
+```
+
+Five steps, in this order:
+
+1. A worktree on a new branch, with `.env*`/`.envrc` carried over as above.
+2. **Prepare** — if the checkout has a lockfile, dependencies are installed in it. The lockfile
+   picks the installer: `pnpm-lock.yaml` → pnpm, `yarn.lock` → yarn, `bun.lockb`/`bun.lock` → bun,
+   `package-lock.json` → npm. No lockfile means no install. The command is typed into the new
+   pane's shell and herdr waits for it to finish, so the install output lands on a screen you can
+   switch to instead of inside the session that asked for it. `--no-install` skips this step.
+3. A pane in the worktree's workspace (`pane.split` with `--cwd <worktree>` and `--no-focus`), then
+   a Pi session in it. The agent name comes from the branch, normalised to herdr's
+   `[a-z][a-z0-9_-]{0,31}` and cut at 32 characters.
+4. The task, as **one message**, through `pane.send_input`. Not `agent.prompt`: that refuses any
+   pane herdr reports as blocked, which is the same layer of problem the approval broker hit, and
+   typing a prompt into a session is pane work.
+5. A notification with the worktree path, branch, workspace, pane and agent name.
+
+`--no-start` stops after step 1: a worktree and its environment, with nothing running in it.
+
+### The task is the whole brief
+
+**No conversation history is passed.** The forked session gets the task text, the worktree and
+branch, the constraints, and what "done" means. A discussion is not a brief: anything decided in
+the session that forked it has to be written into the task, and anything left open has to be asked
+again. That prompt lives in `scopes.ts`, and `review` (3b) will add a second one there.
+
+The implementation scope tells the session to:
+
+- work only inside this worktree, and not touch other checkouts
+- commit on this branch; not create worktrees, start agents, or push
+- ask instead of guessing when the task does not decide something
+- finish with a commit on the branch and a short report, not a diff
+
+A failed install is a warning rather than a failure: the worktree and the pane exist, and the
+notification says what happened. Environment warnings are reported the same way.
+
+### Why the fork waits
+
+Two things a real pane does that the API does not read like:
+
+- `agent.start` answers `agent_pane_busy` while the pane's shell is still being recognised — which
+  is the normal case here, because the install just ran in that pane. The fork retries it.
+- herdr reports the agent ready about three seconds before the agent accepts input. A prompt sent
+  inside that window lands in the editor and is never submitted; the trailing Enter is simply lost.
+  The fork waits for herdr to report a settled agent before sending the task.
+
+Both were measured against herdr and Pi, and both are the reason the steps are ordered this way.
+
 ## Notifications
 
 A pane that newly becomes blocked raises a pi notification. To turn that off:
@@ -145,8 +200,10 @@ herdr is the source of truth. The extension holds no state it cannot rebuild:
   single `pane_id` and rejects a second `events.subscribe` on an already-subscribed connection, so
   a new pane means a new connection. Nothing is accumulated: the set is re-derived from the
   snapshot and compared.
-- The fork/worktree loop (Phase 3) is not implemented. `/fleet worktree create` only creates and
-  prepares a worktree; nothing is started in it, and the workspace is never focused.
+- The fork loop has no second half yet. Nothing reviews a fork and nothing gates a merge (3b, 3c);
+  a fork is reported once and then left alone. There is no list of the worktrees you have forked.
+- Neither `/fleet worktree create` nor `/fleet fork` moves your focus: the new workspace is built in
+  the background.
 - A recipe records one tab. There is no way to save a whole workspace, and no way to restore into
   the tab a recipe was saved from.
 - `direnv` is the only environment manager recognised. A mise/asdf-style setup arrives through
@@ -170,6 +227,14 @@ keeps `cwd`/`env`/`command` but no `pane_id`, that `--start` decides whether com
 that a name cannot escape the recipe directory, and — with a stubbed `direnv` — that an unallowed
 source `.envrc` is never allowed in the new worktree while an allowed one is.
 
+The fork's own pieces are checked the same way: that the lockfile and only the lockfile picks the
+installer, that a checkout with no lockfile is not installed into, that `--no-install` types
+nothing, that the install marker cannot match the command echo (the pane echoes what is typed, so a
+literal marker would match before the install ran), that a non-zero exit is a reported failure, that
+a busy pane is retried while an unfixable `agent.start` failure is not, and that the agent is waited
+for before anything is typed into it. The seed and the agent name are pure functions, so the task,
+the worktree and the branch are checked against the string they produce.
+
 ### Acceptance
 
 ```sh
@@ -186,6 +251,24 @@ raw keys), and that `Esc` closes the overlay. Only the panes it created are clos
 Reporting the subject's state instead of waiting for a real agent keeps the run deterministic: no
 model has to answer, yet the whole path — socket, subscription, overlay, key delivery into the
 subject's `read` — is exercised for real.
+
+```sh
+packages/pi-herdr-fleet/acceptance-fork.sh
+```
+
+End-to-end for `/fleet fork`, against the same real stack plus real git and real npm. A fork creates
+real worktrees, so this script does not touch this repository: it builds its own git repository in a
+temp directory, with a base commit that has no lockfile, and its own workspace for the observer Pi.
+It removes every worktree, workspace, pane and direnv trust entry it created, and never reads or
+closes anything else.
+
+It checks, across four forks: that the worktree, the environment copy, the direnv trust, the
+install, the pane, the Pi and the seed all happen, that the forked session actually does the task
+and commits it, that a checkout without a lockfile is not installed into, that `--no-install`
+ignores a lockfile, and that `--no-start` leaves a worktree with nothing running in it.
+
+Unlike `acceptance.sh`, the last check needs a working model: the point of a fork is that the forked
+session does the work. The script warns when no API key is in the environment.
 
 There is no `tsconfig.json` in this repo, so the type check is explicit:
 

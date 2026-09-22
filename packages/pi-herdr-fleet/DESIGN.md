@@ -19,9 +19,9 @@ herdr の pane/workspace トポロジと Pi のセッション意味論を繋ぐ
 
 | Phase | 内容 |
 |---|---|
-| 1（最初のコミット） | herdr クライアント層、① 承認ブローカー |
-| 2 | レシピ（layout の保存・復元）、worktree と環境の引き継ぎ |
-| 3（次ブランチ） | ③ 分岐 worktree ループ |
+| 1 | herdr クライアント層、① 承認ブローカー（main にマージ済み） |
+| 2 | レシピ（layout の保存・復元）、worktree と環境の引き継ぎ（main にマージ済み） |
+| 3（このブランチ） | 分岐 worktree ループ。3a `fork` / 3b `review` / 3c verdict とマージゲート |
 
 ## 非目標
 
@@ -133,23 +133,108 @@ worktree には git 管理外の開発環境が来ない。`.env` も `.envrc` �
 `.env` の次に来る同じ問題: 新しい worktree には `node_modules` が無い。`npm install` を fork が
 面倒を見るか、seed の指示に含めるかは Phase 3 で決める。
 
-## 5. ③ のデータモデル（実装は Phase 3）
+## 5. Phase 3 — 分岐 worktree ループ
 
-作業スコープごとに「新しい pane へ渡す文脈の量」を変える。会話全体は渡さない。
+目的: main セッションから「作業を別の worktree に分岐させ、実装させ、レビューし、マージする」を
+Pi のコマンドで回す。分岐するのはリポジトリだけでなく**会話の文脈**で、スコープごとに渡す量を変える。
+
+| 増分 | 内容 |
+|---|---|
+| 3a | `fork` — worktree 作成 + 準備 + pane/Pi 起動 + 実装スコープの seed |
+| 3b | `review` — レビュースコープの文脈パッケージ（差分 + 作者セッション） |
+| 3c | verdict のパースとマージゲート |
+
+### 3a: fork — ツール `fleet_fork` とコマンド `/fleet fork`
+
+**主はツール。** ループの主導は agent 側にあり、コマンドだけだと fork のたびに人間が打つことになる。
+コマンドは同じ実装を呼ぶ薄いラッパとして残す（人間が直接打ちたいときのため）。
+
+ツール `fleet_fork`:
+
+| 引数 | 型 | 既定 | 内容 |
+|---|---|---|---|
+| `branch` | string | 必須 | 新しいブランチ名 |
+| `task` | string | 必須 | 実装セッションに渡すタスク |
+| `base` | string | HEAD | 分岐元 |
+| `scope` | enum | `implementation` | スコープ |
+| `install` | boolean | true | lockfile があれば install する |
+| `start` | boolean | true | pane を作って Pi を起動する |
+
+戻り値は worktree path / branch / pane id / agent 名。env の引き継ぎ結果は警告があるときだけ含める。
+ツールの結果は会話の 1 エントリとして残るので、長い出力を並べない。
+
+コマンド:
+
+```
+/fleet fork <branch> --task "<text>" [--base <ref>] [--scope implementation] [--no-install] [--no-start]
+```
+
+手順（ツールとコマンドで共通。`fork.ts` に置く）:
+
+1. `createWorktree`（§4）で worktree と環境を作る
+2. **準備** — worktree に lockfile があれば install する
+   - lockfile で判定: `pnpm-lock.yaml` → pnpm, `yarn.lock` → yarn, `bun.lockb` / `bun.lock` → bun,
+     `package-lock.json` → npm
+   - 新しい pane の shell で実行し、`pane wait-output` で完了を待つ。main の Pi はブロックしない
+   - `--no-install` で飛ばせる。lockfile が無ければ何もしない
+3. **pane と Pi** — `pane.split`（`--cwd <worktree>`、`--no-focus`）→ `agent.start`（kind pi）
+   - agent 名は branch から作る。`[a-z][a-z0-9_-]{0,31}` に正規化し、32 文字で切る
+4. **seed** — スコープの seed を 1 通のプロンプトとして `pane.send_input` で送る
+   - `agent.prompt` は使わない。herdr が blocked と報告している pane を拒否するのと同じ層の話で、
+     pane 側が正しい（§2 参照）
+5. worktree path / branch / pane id / agent 名を返す。worktree ごとの状態一覧は 3c の
+   `/fleet status` で作る（3a では一覧を持たない）
+
+### スコープ registry (`scopes.ts`)
 
 ```
 Scope = {
-  id: "implementation" | "review"
+  id: string
   purpose: string
-  buildContext(session, task): Message[]
-  deliverable: "diff" | "verdict"
+  seed(input: ForkInput): string   // 新しいセッションに送る 1 通
+  deliverable: string
 }
 ```
 
-- `implementation` — タスク記述、制約、対象リポジトリの状態。会話の履歴は要らない
-- `review` — 差分、意図、受け入れ条件、作者の推論の要約。作者の Pi セッションを
-  `agent_session.value` のパスから直接読んで要約を作る。diff だけでは出せない情報
-- スコープを増やすときはこの registry に足すだけ
+`implementation`（3a）:
+
+- タスク本文、worktree の path と branch、制約、完了条件
+- **会話履歴は渡さない。** 実装に必要なのはタスクと制約であって、main の議論の経緯ではない
+- 完了したらコミットし、報告だけを返すよう指示する
+
+`review`（3b）:
+
+- `git diff <base>...HEAD` を worktree で実行した結果
+- 実装セッションに渡したタスク本文
+- 実装セッションの最終アシスタントメッセージ（報告）
+- **作者の Pi セッション JSONL を `agent_session.value` のパスから読む。** assistant のテキストを抜き、
+  上限を付けて渡す。diff だけでは出せない情報
+- 出力を verdict 形式に固定する
+
+スコープを増やすときはこの registry に足すだけ。
+
+### verdict とマージゲート（3c）
+
+レビュワーは最終メッセージをこの形で終える:
+
+```
+VERDICT: approve | request-changes
+FINDINGS:
+- <path>:<line> <内容>
+```
+
+- 拡張はレビュワーのセッション JSONL の最終アシスタントメッセージを読み、`VERDICT:` 行をパースする
+- `/fleet status` が worktree ごとに 未レビュー / approve / request-changes を出す
+- `/fleet merge <branch>` は approve が無ければ拒否する。`--force` で上書きできる
+- verdict は Pi の custom entry としても記録し、main の会話ツリーに残す
+
+### 決めきれていない点（実装前に確認したい）
+
+1. `npm install` を fork がやるか、seed の指示に含めるか。上は「fork がやる」で書いたが、install が
+   遅いリポジトリでは待たされる
+2. 実装スコープに会話履歴を一切渡さない方針でよいか。main で決めた設計判断はタスク本文に書き写す
+   必要がある
+3. verdict の形式を固定してよいか。自由記述を拡張が LLM で要約する案もあるが、決定性を優先した
 
 ## ファイル構成
 
@@ -160,6 +245,8 @@ packages/pi-herdr-fleet/
   approvals.ts      ①
   recipes.ts        レシピ
   worktree.ts       worktree 作成と環境の引き継ぎ
+  scopes.ts         Phase 3 のスコープ registry（seed の組み立て）
+  fork.ts           ツール `fleet_fork` とコマンド `/fleet fork` の共通実装
   selfcheck.ts      fake herdr サーバに対するロジックの検証
   acceptance.sh     実 pane の受入試験
   README.md
@@ -193,3 +280,9 @@ blocked にした shell）・observer（この拡張を読み込んだ Pi）・�
 - 通知の確認は Pi のトーストが `recent-unwrapped` に残ることに依存している。試験の中で唯一
   タイミングに依存する検査。失敗したら `herdr pane wait-output` に切り替える
 - 実エージェントの承認 UI に対する `pane.send_input` は未検証（subject は合成した blocked）
+
+Phase 3 の検証（増分ごとに追記する）:
+
+- `fork` が worktree・環境・pane・Pi を作り、seed が届いて実装セッションが作業を始めること
+- `--no-install` と lockfile 無しのときに install を飛ばすこと
+- `--no-start` で pane を作らず worktree だけ作ること

@@ -20,17 +20,14 @@ import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import { ApprovalBroker, FleetOverlay, type Strings, strings } from "./approvals.ts";
+import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient } from "./herdr-client.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
-import { findScope, scopeIds } from "./scopes.ts";
 import {
 	type CommandRunner,
 	type EnvPropagation,
 	type InstallOutcome,
-	agentName,
 	createWorktree,
-	prepareWorktree,
-	startAgent,
 } from "./worktree.ts";
 
 interface Config {
@@ -203,61 +200,33 @@ export default function (pi: ExtensionAPI) {
 		const [branch, ...tail] = rest;
 		const { flags } = parseFlags(tail, ["task", "base", "scope", "no-install", "no-start"]);
 		const task = flags.get("task");
-		const scopeId = flags.get("scope") || "implementation";
-		const scope = findScope(scopeId);
+		// Only the command line's own shape is checked here: a missing `--task` is a
+		// typo in what was typed, and gets the usage line. What the fork itself needs
+		// is validated in `forkWorktree`, because the tool's caller is a model.
 		if (!branch || !task) {
 			ctx.ui.notify(t.forkUsage, "warning");
 			return;
 		}
-		if (!scope) {
-			ctx.ui.notify(t.forkUnknownScope(scopeId, scopeIds()), "warning");
-			return;
-		}
 
-		const base = flags.get("base") || undefined;
 		ctx.ui.notify(t.forkCreating(branch), "info");
-		const created = await createWorktree(client, run, { cwd: ctx.cwd, branch, base, label: branch });
-		if (!created.ok) {
-			ctx.ui.notify(created.error, "error");
-			return;
-		}
-		const { env, path, workspaceId, rootPaneId } = created.value;
-
-		// `--no-start` stops here: the worktree and its environment exist, and
-		// nothing is running in them.
-		if (flags.has("no-start")) {
-			ctx.ui.notify(t.forkCreated(branch, path, workspaceId, t.forkNoStart), "info");
-			for (const warning of env.warnings) ctx.ui.notify(`${t.worktreeWarningPrefix} ${warning}`, "warning");
-			return;
-		}
-
-		const prepared = await prepareWorktree(client, {
-			path,
-			workspaceId,
-			rootPaneId,
+		const forked = await forkWorktree(client, run, {
+			cwd: ctx.cwd,
+			branch,
+			task,
+			base: flags.get("base") || undefined,
+			scope: flags.get("scope") || undefined,
 			install: !flags.has("no-install"),
+			start: !flags.has("no-start"),
 		});
-		if (!prepared.ok) {
-			ctx.ui.notify(t.forkFailed(path, prepared.error), "error");
-			return;
-		}
-		const { install, paneId } = prepared.value;
-
-		// The pane surface, not `agent.prompt`: see §2 of DESIGN.md.
-		const agent = agentName(branch);
-		const started = await startAgent(client, { paneId, name: agent });
-		if (!started.ok) {
-			ctx.ui.notify(t.forkFailed(path, started.error), "error");
+		if (!forked.ok) {
+			ctx.ui.notify(forked.error, "error");
 			return;
 		}
 
-		const sent = await client.paneSendInput(paneId, scope.seed({ task, path, branch, base }));
-		if (!sent.ok) {
-			ctx.ui.notify(t.forkSeedFailed(path, sent.error), "error");
-			return;
-		}
-
-		ctx.ui.notify(t.forkCreated(branch, path, workspaceId, t.forkRunning(paneId, agent, installSummary(install, t))), install?.ok === false ? "warning" : "info");
+		const { env, install, path, session, workspaceId } = forked.value;
+		const state =
+			session === undefined ? t.forkNoStart : t.forkRunning(session.paneId, session.agent, installSummary(install, t));
+		ctx.ui.notify(t.forkCreated(forked.value.branch, path, workspaceId, state), install?.ok === false ? "warning" : "info");
 		for (const warning of env.warnings) ctx.ui.notify(`${t.worktreeWarningPrefix} ${warning}`, "warning");
 	}
 
@@ -311,6 +280,9 @@ export default function (pi: ExtensionAPI) {
 		// RPC and print modes have no PTY herdr can display and no terminal to
 		// draw the overlay in, so the extension stays inert there.
 		if (ctx.mode !== "tui") return;
+		// The tool is the primary way to fork, so it is registered with the same
+		// guard as everything else: inside herdr, in an interactive session.
+		pi.registerTool(fleetForkTool(client, run));
 		broker?.stop();
 		config = readConfig();
 		const t = strings();

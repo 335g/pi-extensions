@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 import { ApprovalBroker, FleetOverlay, strings } from "./approvals.ts";
+import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient, type Outcome, type SubscribeEvent } from "./herdr-client.ts";
 import { tokenize } from "./index.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
@@ -570,6 +571,89 @@ try {
 	);
 	assert(received.filter((call) => call.method === "agent.start").length === 1, "an unfixable failure must not be retried");
 
+	// ------------------------------------------------------------ tool path
+
+	// The schema is what a model's arguments are checked against before
+	// `forkWorktree` sees them, so it has to carry the requirements itself.
+	const tool = fleetForkTool(client, run);
+	const schema = tool.parameters as any;
+	assert(tool.name === "fleet_fork", `the tool name is the API: ${tool.name}`);
+	assert(schema.required.join() === "branch,task", `branch and task must be required: ${JSON.stringify(schema.required)}`);
+	assert(schema.properties.scope.enum.join() === scopeIds(), `the scope enum comes from the registry: ${JSON.stringify(schema.properties.scope)}`);
+	assert(
+		schema.properties.install.type === "boolean" && schema.properties.start.type === "boolean",
+		"install and start are optional booleans",
+	);
+
+	// Empty arguments never reach herdr: the caller is a model, and a field it
+	// filled with nothing is the shape a missing argument usually takes.
+	received.length = 0;
+	for (const request of [
+		{ cwd: dirs.source, branch: "  ", task: "do it" },
+		{ cwd: dirs.source, branch: "feat/x", task: "" },
+		{ cwd: dirs.source, branch: "feat/x", task: "do it", scope: "review" },
+	]) {
+		const refused = await forkWorktree(client, run, request);
+		assert(!refused.ok, `an invalid fork request must be refused: ${JSON.stringify(request)}`);
+	}
+	assert(received.length === 0, `a refused request must not reach herdr: ${JSON.stringify(received.map((call) => call.method))}`);
+
+	// The tool path reaches the same herdr calls as the command, because both go
+	// through forkWorktree.
+	direnv(0);
+	received.length = 0;
+	startFaults = [];
+	waitText = "FLEET_INSTALL_1=0\n";
+	writeFileSync(join(scratch, "checkout", "package-lock.json"), "{}");
+	const forked = await tool.execute(
+		"call-1",
+		{ branch: "feat/tool", task: "TOOL-MARKER" },
+		undefined,
+		undefined,
+		{ mode: "tui", cwd: dirs.source } as never,
+	);
+	const report = (forked.content[0] as { text: string }).text;
+	assert(report.includes("forked feat/tool") && report.includes("agent: feat-tool"), `the tool result must name the fork: ${report}`);
+	assert(report.includes(join(scratch, "checkout")), `the tool result must name the worktree: ${report}`);
+	assert(!report.includes("warning:") && !report.includes("copied"), `a clean fork says nothing about the environment: ${report}`);
+	assert(
+		received.some((call) => call.method === "worktree.create" && call.params.branch === "feat/tool") &&
+			received.some((call) => call.method === "pane.send_input" && call.params.text.includes("TOOL-MARKER")),
+		"the tool must create the worktree and send the seed",
+	);
+	assert((forked.details as { install?: { command: string } }).install?.command === "npm install", "the install is reported to the model");
+
+	// An environment warning is the one thing about the environment the result
+	// carries, because it is the one thing the caller may have to act on.
+	rmSync(join(scratch, "checkout"), { recursive: true, force: true });
+	mkdirSync(join(scratch, "checkout"), { recursive: true });
+	writeFileSync(join(scratch, "checkout", "package-lock.json"), "{}");
+	answer = () => ({ stdout: "", stderr: "nope", code: 1, killed: false });
+	const warned = await tool.execute(
+		"call-2",
+		{ branch: "feat/tool-warn", task: "TOOL-MARKER" },
+		undefined,
+		undefined,
+		{ mode: "tui", cwd: dirs.source } as never,
+	);
+	assert(
+		(warned.content[0] as { text: string }).text.includes("warning:"),
+		`an environment warning must reach the model: ${(warned.content[0] as { text: string }).text}`,
+	);
+
+	// A tool reports failure by throwing; a returned value never sets the error
+	// flag, and the model has to know the fork did not happen.
+	const refusal = async (params: Record<string, unknown>, mode = "tui") => {
+		try {
+			await tool.execute("call-x", params as never, undefined, undefined, { mode, cwd: dirs.source } as never);
+			return "";
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error);
+		}
+	};
+	assert((await refusal({ branch: "", task: "" })).includes("required"), "an empty request must fail the tool call");
+	assert((await refusal({ branch: "feat/x", task: "do it" }, "print")).includes("interactive"), "outside a TUI session the tool refuses");
+
 	// ------------------------------------------------------------ registration guard
 
 	const registered = (env: Record<string, string | undefined>) => {
@@ -597,6 +681,27 @@ try {
 	);
 	assert(registered({ HERDR_ENV: "1" }) === "", "a missing socket path must keep the extension inert");
 	assert(registered({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" }) === "", "a missing socket path must keep the extension inert");
+
+	// The tool is registered from `session_start`, so it only exists in the modes
+	// that have a terminal: print and RPC modes can never call it.
+	const toolsIn = async (mode: string): Promise<string> => {
+		const saved = { ...process.env };
+		Object.assign(process.env, { HERDR_ENV: "1", HERDR_SOCKET_PATH: socketPath, HERDR_PANE_ID: "w1:p1" });
+		const names: string[] = [];
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+		extension({
+			registerCommand: () => {},
+			registerShortcut: () => {},
+			registerTool: (definition: { name: string }) => names.push(definition.name),
+			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<void>) => handlers.set(event, handler),
+		} as never);
+		await handlers.get("session_start")!({}, { mode, ui: { notify: () => {} } });
+		await handlers.get("session_shutdown")!({}, {});
+		process.env = saved;
+		return names.join();
+	};
+	assert((await toolsIn("tui")) === "fleet_fork", "an interactive session must register the fork tool");
+	assert((await toolsIn("print")) === "", "a print session must register no tool");
 
 	console.log("pi-herdr-fleet: ok");
 } finally {

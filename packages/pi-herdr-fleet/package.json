@@ -22,7 +22,8 @@
     "approvals.ts",
     "recipes.ts",
     "worktree.ts",
-    "scopes.ts"
+    "scopes.ts",
+    "fork.ts"
   ],
   "publishConfig": {
     "access": "public"

@@ -122,6 +122,25 @@ fresh worktree dies on startup with `No API key found`.
 /fleet fork feat/x --task "Add retries to the uploader"
 ```
 
+The same fork is available as a tool, and **the tool is the primary path**: the loop this extension
+exists for is driven by an agent, and a command alone would put a human in the middle of every step.
+The command stays for the times a human does want to type it; both call the same function in
+`fork.ts`, so there is one order of operations to keep right.
+
+`fleet_fork`:
+
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `branch` | string | required | Branch name for the new worktree |
+| `task` | string | required | The task the forked session works on |
+| `base` | string | HEAD | Ref to branch from |
+| `scope` | enum | `implementation` | What kind of session to fork |
+| `install` | boolean | true | Install dependencies when the worktree has a lockfile |
+| `start` | boolean | true | Open a pane and start Pi in it |
+
+It returns the worktree path, branch, workspace, pane and agent name, and — only when there are any —
+the environment warnings. A tool result becomes one entry in the conversation, so it stays short.
+
 Five steps, in this order:
 
 1. A worktree on a new branch, with `.env*`/`.envrc` carried over as above.
@@ -146,6 +165,13 @@ Five steps, in this order:
 branch, the constraints, and what "done" means. A discussion is not a brief: anything decided in
 the session that forked it has to be written into the task, and anything left open has to be asked
 again. That prompt lives in `scopes.ts`, and `review` (3b) will add a second one there.
+
+That is also why the tool's argument descriptions say so: the model writing the `task` is the one
+who has to write the brief.
+
+`branch` and `task` are rejected when they are empty. The tool's caller is a model, so a field it
+filled in with nothing is the shape a missing argument usually takes; the schema catches an argument
+that is not there at all, and this catches the empty string the schema cannot express.
 
 The implementation scope tells the session to:
 
@@ -235,6 +261,12 @@ a busy pane is retried while an unfixable `agent.start` failure is not, and that
 for before anything is typed into it. The seed and the agent name are pure functions, so the task,
 the worktree and the branch are checked against the string they produce.
 
+The tool is checked through its own surface: that `branch` and `task` are required by the schema,
+that the scope enum comes from the registry, that an empty `branch`/`task` or an unknown scope never
+reaches herdr, that a call from a non-TUI session is refused, that a failure throws (a returned
+value never sets the error flag), that the result names the fork without describing a clean
+environment, and that an environment warning does reach the model.
+
 ### Acceptance
 
 ```sh
@@ -267,8 +299,15 @@ install, the pane, the Pi and the seed all happen, that the forked session actua
 and commits it, that a checkout without a lockfile is not installed into, that `--no-install`
 ignores a lockfile, and that `--no-start` leaves a worktree with nothing running in it.
 
-Unlike `acceptance.sh`, the last check needs a working model: the point of a fork is that the forked
-session does the work. The script warns when no API key is in the environment.
+Then it checks the tool path, which is the one an agent actually uses and the one a command-line
+test cannot reach: the observer's agent is told to call `fleet_fork`, and the worktree, the pane, the
+tool result in the observer's conversation and the seed in the forked session are all checked. Two
+refusals follow — an empty `task`, which the tool's own validation catches, and a call with no `task`
+at all, which the schema catches before the tool runs. Neither may leave a worktree behind.
+
+Unlike `acceptance.sh`, this needs a working model for two reasons: the forked session has to do the
+task, and the observer has to decide to call the tool. The script warns when no API key is in the
+environment.
 
 There is no `tsconfig.json` in this repo, so the type check is explicit:
 

@@ -6,7 +6,8 @@
 待っているかを知っている。`/fleet` はその一覧を、いま見ている pane の上に overlay で出し、pane を
 切り替えずに blocked のエージェントへ答える。同じコマンドで tab のレイアウトを保存・復元し、
 git 管理外の開発環境を引き継いだ worktree も作れる。さらにその worktree を fork できる。worktree を
-切り、その中で Pi セッションを起動し、タスクを 1 通で渡す。
+切り、その中で Pi セッションを起動し、タスクを 1 通で渡す。fork はツール `fleet_fork` として登録される
+ので、agent が自分のループから呼べる。
 
 Phase 3a は `/fleet fork` まで。レビュー（3b）とマージゲート（3c）はこれから。
 
@@ -36,6 +37,8 @@ pi install npm:@335g/pi-herdr-fleet
   引き継ぐ
 - `/fleet fork <branch> --task "<text>" [--base <ref>] [--scope implementation] [--no-install]
   [--no-start]` — worktree を fork し、その中で Pi セッションを起動し、タスクを渡す
+- `fleet_fork` ツール — 同じことを agent から呼ぶ。引数は `branch` / `task` / `base` / `scope` /
+  `install` / `start`
 
 | キー | 動作 |
 |------|------|
@@ -115,6 +118,24 @@ Pi が `No API key found` で即死する。
 /fleet fork feat/x --task "uploader にリトライを入れる"
 ```
 
+同じ fork はツールとしても呼べる。**主はツール。** この拡張が担うループの主導は agent 側にあり、
+コマンドだけだと fork のたびに人間が真ん中に入ることになる。コマンドは人間が直接打ちたいときのために
+残していて、どちらも `fork.ts` の同じ関数を呼ぶ。手順の正しさを保つ場所は 1 つだけ。
+
+`fleet_fork`:
+
+| 引数 | 型 | 既定 | 内容 |
+|---|---|---|---|
+| `branch` | string | 必須 | 新しいブランチ名 |
+| `task` | string | 必須 | 実装セッションに渡すタスク |
+| `base` | string | HEAD | 分岐元 |
+| `scope` | enum | `implementation` | スコープ |
+| `install` | boolean | true | lockfile があれば install する |
+| `start` | boolean | true | pane を作って Pi を起動する |
+
+返すのは worktree path / branch / workspace / pane / agent 名、そして環境の警告があるときだけその警告。
+ツールの結果は会話の 1 エントリになるので、長い出力は並べない。
+
 手順はこの順で 5 つ。
 
 1. 新しいブランチの worktree を作り、上と同じように `.env*` / `.envrc` を引き継ぐ。
@@ -139,6 +160,12 @@ Pi が `No API key found` で即死する。
 制約、そして「完了」の定義だけ。議論は指示書ではない。fork した側で決めたことはタスク本文に書き写す
 必要があり、決めきれなかったことは向こうでもう一度問うしかない。このプロンプトは `scopes.ts` にあり、
 `review`（3b）もここに増える。
+
+ツールの引数の説明がそう書いてあるのはこのため。`task` を書くのは、その指示書を書くべき当のモデル。
+
+`branch` と `task` は空文字なら弾く。ツールの呼び出し元はモデルなので、中身の無いフィールドは「引数を
+書き忘れた」ときの典型的な形になる。引数がそもそも無い場合はスキーマが弾き、スキーマでは表せない空文字を
+ここで弾く。
 
 implementation スコープがセッションに伝えること:
 
@@ -222,6 +249,11 @@ install しないこと、`--no-install` が何も打ち込まないこと、ins
 `agent.start` の失敗はリトライしないこと、何かを打ち込む前に agent の settled を待つこと。seed と
 agent 名は純粋関数なので、タスク・worktree・branch が出来上がる文字列に入ることを見る。
 
+ツールはツール自身の面から確認する。`branch` と `task` がスキーマで必須であること、scope の enum が
+registry から来ること、空の `branch` / `task` や未知の scope が herdr に届かないこと、TUI 以外の
+セッションからの呼び出しを拒否すること、失敗は throw すること（戻り値ではエラーフラグは立たない）、
+結果が fork を名指ししつつきれいな環境の話はしないこと、環境の警告はモデルに届くこと。
+
 ### 受入試験
 
 ```sh
@@ -251,8 +283,13 @@ fork 4 つで確認する。worktree・環境のコピー・direnv の trust・i
 install しないこと、`--no-install` が lockfile を無視すること、`--no-start` が何も動いていない worktree
 を残すこと。
 
-`acceptance.sh` と違い、最後の確認には動くモデルが要る。fork の目的が「fork 先のセッションに作業させる
-こと」だから。API key が環境に無ければ警告を出す。
+続けてツール経路を確認する。agent が実際に使うのはこちらで、コマンドの試験では届かない。observer の
+agent に `fleet_fork` を呼ばせ、worktree、pane、observer の会話に残ったツール結果、fork 先セッションに
+届いた seed を見る。そのあと拒否を 2 つ。空の `task`（ツール自身の検証が弾く）と、`task` をそもそも
+渡さない呼び出し（ツールが動く前にスキーマが弾く）。どちらも worktree を残してはいけない。
+
+`acceptance.sh` と違い、ここには動くモデルが要る。fork 先のセッションに作業させるためと、observer に
+ツールを呼ばせるため。API key が環境に無ければ警告を出す。
 
 このリポジトリに `tsconfig.json` は無いので、型チェックは明示的に実行する:
 

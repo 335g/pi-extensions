@@ -278,13 +278,10 @@ export interface Strings {
 	worktreeCreated(branch: string, path: string, workspaceId: string, env: string): string;
 	worktreeWarningPrefix: string;
 	forkUsage: string;
-	forkUnknownScope(id: string, known: string): string;
 	forkCreating(branch: string): string;
 	forkCreated(branch: string, path: string, workspaceId: string, state: string): string;
 	forkNoStart: string;
 	forkRunning(paneId: string, agent: string, prepare: string): string;
-	forkFailed(path: string, error: string): string;
-	forkSeedFailed(path: string, error: string): string;
 	forkNoInstall: string;
 	forkInstalled(command: string): string;
 	forkInstallFailed(command: string, error: string): string;
@@ -317,13 +314,10 @@ const JA: Strings = {
 	worktreeCreated: (branch, path, workspaceId, env) => `worktree ${branch} を作成しました（${workspaceId} · ${path}）— ${env}`,
 	worktreeWarningPrefix: "worktree の環境:",
 	forkUsage: '使い方: /fleet fork <branch> --task "<text>" [--base <ref>] [--scope implementation] [--no-install] [--no-start]',
-	forkUnknownScope: (id, known) => `不明なスコープ: ${id}（使えるのは ${known}）`,
 	forkCreating: (branch) => `fork ${branch} を準備中…`,
 	forkCreated: (branch, path, workspaceId, state) => `fork ${branch}（${workspaceId} · ${path}）— ${state}`,
 	forkNoStart: "--no-start のため pane も agent も作成していません",
 	forkRunning: (paneId, agent, prepare) => `pane ${paneId} · agent ${agent} · ${prepare}`,
-	forkFailed: (path, error) => `worktree ${path} は作成済みですが起動に失敗しました: ${error}`,
-	forkSeedFailed: (path, error) => `worktree ${path} の agent は起動しましたが seed を送れませんでした: ${error}`,
 	forkNoInstall: "install なし（lockfile が無いか --no-install）",
 	forkInstalled: (command) => `${command} 完了`,
 	forkInstallFailed: (command, error) => `${command} 失敗（${error}）`,
@@ -356,13 +350,10 @@ const EN: Strings = {
 	worktreeCreated: (branch, path, workspaceId, env) => `Created worktree ${branch} (${workspaceId} · ${path}) — ${env}`,
 	worktreeWarningPrefix: "worktree environment:",
 	forkUsage: 'Usage: /fleet fork <branch> --task "<text>" [--base <ref>] [--scope implementation] [--no-install] [--no-start]',
-	forkUnknownScope: (id, known) => `Unknown scope: ${id} (available: ${known})`,
 	forkCreating: (branch) => `Preparing fork ${branch}...`,
 	forkCreated: (branch, path, workspaceId, state) => `Forked ${branch} (${workspaceId} · ${path}) — ${state}`,
 	forkNoStart: "--no-start: no pane and no agent were created",
 	forkRunning: (paneId, agent, prepare) => `pane ${paneId} · agent ${agent} · ${prepare}`,
-	forkFailed: (path, error) => `worktree ${path} exists, but starting it failed: ${error}`,
-	forkSeedFailed: (path, error) => `the agent in ${path} started, but the seed was not delivered: ${error}`,
 	forkNoInstall: "no install (no lockfile, or --no-install)",
 	forkInstalled: (command) => `${command} finished`,
 	forkInstallFailed: (command, error) => `${command} failed (${error})`,

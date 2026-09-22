@@ -30,6 +30,10 @@ WT_PARENT="$HOME/.herdr/worktrees/fleet-fork-accept-$$"
 PREFIX="fleet-accept-$$"
 OBSERVER_WS=""
 OBSERVER=""
+# The observer runs with `-ne`, so herdr's own integration is not loaded and the
+# pane never reports a session path. Pinning the file is how the checks below can
+# read what the observer's agent actually did.
+OBSERVER_SESSION="$SCRATCH/observer.jsonl"
 PASS=0
 FAIL=0
 
@@ -225,7 +229,7 @@ if [ -z "$OBSERVER" ]; then
 fi
 printf '   observer: %s (%s)\n' "$OBSERVER" "$OBSERVER_WS"
 herdr agent start "fleet-fork-accept-$$" --kind pi --pane "$OBSERVER" --timeout 60000 \
-	-- -ne -e "$EXTENSION" >/dev/null 2>&1
+	-- -ne -e "$EXTENSION" --session "$OBSERVER_SESSION" >/dev/null 2>&1
 if [ $? -eq 0 ]; then
 	ok "observer Pi started with the extension"
 else
@@ -286,10 +290,12 @@ else
 	herdr pane read "$FULL_PANE" --source visible --lines 30 2>/dev/null | tail -20
 fi
 
-# And the session is working, not just seeded: the task asks for a commit.
-deadline=$((SECONDS + 180))
+# And the session is working, not just seeded: the task asks for a commit. Wait
+# for the commit to be the one that carries the file, not for any commit at all —
+# the base commit is already there.
+deadline=$((SECONDS + 240))
 while [ "$SECONDS" -lt "$deadline" ]; do
-	if [ -f "$FULL_PATH/fork-marker.txt" ] && git -C "$FULL_PATH" log --oneline -1 2>/dev/null | grep -q .; then break; fi
+	if git -C "$FULL_PATH" log -1 --name-only --oneline 2>/dev/null | grep -q fork-marker.txt; then break; fi
 	sleep 2
 done
 check "the forked session did the task" 'FORKED' "$(cat "$FULL_PATH/fork-marker.txt" 2>/dev/null)"
@@ -355,6 +361,104 @@ if [ -z "$NOSTART_AGENTS" ]; then
 	ok "--no-start started no agent"
 else
 	fail "--no-start started an agent ($NOSTART_AGENTS)"
+fi
+
+# ---------------------------------------------------------------- 7. the tool
+
+# The tool is the primary path, and it differs from the command in the two places
+# that matter: the arguments arrive from a model, through a schema, instead of
+# from a command line, and the result goes back into the conversation.
+
+say "7. tool: the observer's agent forks through fleet_fork"
+BRANCH="$PREFIX/tool"
+TOOL_TASK="Reply with the single word TOOLMARKER and do nothing else."
+ask() { # ask <prompt>
+	herdr pane send-text "$OBSERVER" "$1" >/dev/null 2>&1
+	sleep 0.7
+	herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1
+}
+ask "Call the fleet_fork tool exactly once with branch \"$BRANCH\" and task \"$TOOL_TASK\" Then stop."
+await_fork "$BRANCH" yes >/dev/null
+TOOL_PATH="$(worktree_field "$BRANCH" path)"
+TOOL_WS="$(worktree_field "$BRANCH" open_workspace_id)"
+if [ -n "$TOOL_PATH" ]; then
+	ok "the tool created a worktree ($TOOL_PATH)"
+else
+	fail "the agent's fleet_fork call created no worktree"
+	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+fi
+TOOL_PANE="$(pane_in_workspace "$TOOL_WS" pi)"
+[ -n "$TOOL_PANE" ] && ok "the tool started a Pi session in it ($TOOL_PANE)" || fail "no Pi agent from the tool path"
+
+# The tool result is a conversation entry, so the observer's own session is where
+# to see that the call happened and what it returned.
+TOOL_SEEN=""
+SESSION_FILE="$(pane_session "$TOOL_PANE")"
+SEEDED=""
+deadline=$((SECONDS + 180))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	if grep -q "forked $BRANCH" "$OBSERVER_SESSION" 2>/dev/null; then TOOL_SEEN="yes"; fi
+	if [ -n "$SESSION_FILE" ] && grep -q "TOOLMARKER" "$SESSION_FILE" 2>/dev/null; then SEEDED="yes"; fi
+	[ -n "$TOOL_SEEN" ] && [ -n "$SEEDED" ] && break
+	sleep 1
+done
+check "the tool result reached the observer's conversation" "forked $BRANCH.*agent: $PREFIX-tool" "$(grep -a "forked $BRANCH" "$OBSERVER_SESSION" 2>/dev/null | tail -1)"
+if [ -n "$SEEDED" ]; then
+	ok "the tool path's seed reached the forked session"
+else
+	fail "the tool path's seed never arrived ($SESSION_FILE)"
+fi
+
+# ---------------------------------------------------------------- 8. refused
+
+# The tool's arguments arrive from a model, through a schema, so there are two
+# ways a bad call is stopped: the schema refuses it before `execute` runs, and
+# `forkWorktree` refuses what the schema cannot express. Both are checked here,
+# because neither is reachable from the command line.
+
+say "8. tool: a call with nothing in it is refused"
+
+# 8a. An empty task passes the schema (a string is a string) and has to be
+# refused by the validation the tool does for its model caller.
+BRANCH="$PREFIX/empty"
+ask "Call the fleet_fork tool with branch \"$BRANCH\" and task set to the empty string. Report the exact error you get, and do not retry or use another tool."
+REFUSED=""
+deadline=$((SECONDS + 180))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	if grep -q "branch and task are both required" "$OBSERVER_SESSION" 2>/dev/null; then REFUSED="yes"; break; fi
+	sleep 1
+done
+if [ -n "$REFUSED" ]; then
+	ok "the tool refused an empty task"
+else
+	fail "the empty call was not refused"
+	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+fi
+if [ -z "$(worktree_field "$BRANCH" path)" ]; then
+	ok "the refused call created no worktree"
+else
+	fail "the refused call created a worktree"
+fi
+
+# 8b. A missing task never reaches the tool: the schema is what the model's
+# arguments are validated against.
+BRANCH="$PREFIX/notask"
+ask "Call the fleet_fork tool with branch \"$BRANCH\" and do not pass any task argument at all. Report the exact error you get, and do not retry or use another tool."
+REFUSED=""
+deadline=$((SECONDS + 180))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	if grep -q "must have required properties task" "$OBSERVER_SESSION" 2>/dev/null; then REFUSED="yes"; break; fi
+	sleep 1
+done
+if [ -n "$REFUSED" ]; then
+	ok "the schema refused a call without a task"
+else
+	fail "the call without a task was not refused by the schema"
+fi
+if [ -z "$(worktree_field "$BRANCH" path)" ]; then
+	ok "the call without a task created no worktree"
+else
+	fail "the call without a task created a worktree"
 fi
 
 # ---------------------------------------------------------------- result

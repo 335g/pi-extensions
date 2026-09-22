@@ -163,6 +163,11 @@ Pi のコマンドで回す。分岐するのはリポジトリだけでなく**
 戻り値は worktree path / branch / pane id / agent 名。env の引き継ぎ結果は警告があるときだけ含める。
 ツールの結果は会話の 1 エントリとして残るので、長い出力を並べない。
 
+**install の既定は true。** ツール経路では agent の tool call が install の間ブロックするが、軽い npm
+プロジェクトで実測 1〜2 秒なので既定のままでよい。遅いリポジトリ用の逃げ道は `install: false` で、
+これはツールの説明に書いて agent が選べるようにする。install には 10 分のタイムアウトを付ける。
+第三のモード（先に Pi を起動して seed で install させる）は作らない。
+
 コマンド:
 
 ```
@@ -184,6 +189,23 @@ Pi のコマンドで回す。分岐するのはリポジトリだけでなく**
      pane 側が正しい（§2 参照）
 5. worktree path / branch / pane id / agent 名を返す。worktree ごとの状態一覧は 3c の
    `/fleet status` で作る（3a では一覧を持たない）
+
+### fork を linked worktree からも使えるようにする（緩和策の検討）
+
+現状 `worktree.create` は cwd が linked worktree だと `linked_worktree_source` で拒否する。
+fork は main checkout の workspace からしか使えず、fork の入れ子ができない。
+
+候補:
+
+1. **main worktree に解決してから呼ぶ。** `git worktree list --porcelain` の先頭が main worktree。
+   cwd が linked worktree なら、main の path を `worktree.create` の `cwd` に渡す
+   - `--base` を明示しないと fork 点が main checkout の HEAD に移る。呼び出し元の HEAD を ref として
+     渡す必要がある
+   - 呼び出し元に未コミットの変更がある場合、それは fork に入らない。警告を出す
+2. **拒否したままにする。** main セッションだけが fork する構成では成立している。
+   エラーに「main checkout から実行すること」を明記する
+
+1 を試し、素直にいかなければ 2 を受け入れる。
 
 ### スコープ registry (`scopes.ts`)
 
@@ -209,24 +231,34 @@ Scope = {
 - 実装セッションの最終アシスタントメッセージ（報告）
 - **作者の Pi セッション JSONL を `agent_session.value` のパスから読む。** assistant のテキストを抜き、
   上限を付けて渡す。diff だけでは出せない情報
-- 出力を verdict 形式に固定する
+- 出力を verdict 形式に固定する（3c で `fleet_verdict` ツールに差し替える）
+
+**レビューは実装 worktree の中の新しい pane で行う。** 同じ branch を 2 つ目の worktree にチェックアウト
+することは git が拒否する（既に他の worktree がチェックアウトしている）。レビュワーには読み取り専用を
+指示する。隔離が必要になったら detached な 2 つ目の worktree を検討する。
+
+`/fleet review <branch>` とツール `fleet_review` を出す。fork と同じく**ツールが主、コマンドは薄い
+ラッパ**。
 
 スコープを増やすときはこの registry に足すだけ。
 
 ### verdict とマージゲート（3c）
 
-レビュワーは最終メッセージをこの形で終える:
+**verdict はテキスト規約ではなくツール呼び出しにする。** 3a で fork が第一級のツールになったので、
+同じ仕組みを使う方が決定性が高く、JSONL から `VERDICT:` 行を探すパースも要らない。
 
-```
-VERDICT: approve | request-changes
-FINDINGS:
-- <path>:<line> <内容>
-```
+レビュワーに `fleet_verdict` ツールを渡す:
 
-- 拡張はレビュワーのセッション JSONL の最終アシスタントメッセージを読み、`VERDICT:` 行をパースする
+| 引数 | 型 | 内容 |
+|---|---|---|
+| `verdict` | enum | `approve` / `request-changes` |
+| `findings` | array | `{ path, line?, note }` の配列 |
+
+- ツール呼び出しはレビュワーのセッション JSONL に残るので、main はそこから読む
 - `/fleet status` が worktree ごとに 未レビュー / approve / request-changes を出す
 - `/fleet merge <branch>` は approve が無ければ拒否する。`--force` で上書きできる
 - verdict は Pi の custom entry としても記録し、main の会話ツリーに残す
+- `request-changes` の findings をそのまま実装セッションに送り返せるようにする（差し戻しの経路）
 
 ### 決めきれていない点（実装前に確認したい）
 
@@ -235,6 +267,28 @@ FINDINGS:
 2. 実装スコープに会話履歴を一切渡さない方針でよいか。main で決めた設計判断はタスク本文に書き写す
    必要がある
 3. verdict の形式を固定してよいか。自由記述を拡張が LLM で要約する案もあるが、決定性を優先した
+
+## テストの方針
+
+**Phase 3 をマージする前に整理する。** 現状:
+
+| ファイル | 行数 | 役割 |
+|---|---|---|
+| `selfcheck.ts` | 711 | fake herdr サーバに対するロジック検証 |
+| `acceptance.sh` | 194 | Phase 1/2 の実 pane 受入試験 |
+| `acceptance-fork.sh` | 467 | Phase 3a の実 pane 受入試験 |
+
+実装（`fork.ts` 175 行）より試験が大きい。リポジトリの慣例（`pi-byetheway/selfcheck.ts` 74 行）
+からは大きく外れている。穴を見つけているので無駄ではないが、増分ごとに selfcheck +150 行 /
+acceptance +200 行が積み上がるペースは持続しない。
+
+整理の方向:
+
+- 2 つの acceptance スクリプトを 1 つにし、共通の harness（pane 作成、observer 起動、検査、後始末）を
+  共有する。同じ処理が両方に重複している
+- selfcheck は「fake サーバでしか検証できないもの」に絞る。実 pane で検証済みの経路を fake でも
+  重ねて検証していないか見る
+- 目標は行数ではなく**重複の除去**。数を減らすために被覆を落とさない
 
 ## ファイル構成
 
@@ -280,9 +334,18 @@ blocked にした shell）・observer（この拡張を読み込んだ Pi）・�
 - 通知の確認は Pi のトーストが `recent-unwrapped` に残ることに依存している。試験の中で唯一
   タイミングに依存する検査。失敗したら `herdr pane wait-output` に切り替える
 - 実エージェントの承認 UI に対する `pane.send_input` は未検証（subject は合成した blocked）
+- `worktree.create` は cwd が linked worktree だと `linked_worktree_source` で拒否する。`/fleet fork` は
+  main checkout の workspace から使う必要がある。fork の入れ子はできない
+- `pane.split` は対象 pane を明示しないと**フォーカス中の pane** を分割する。別 workspace に pane が
+  生えるので、fork は worktree workspace の root pane を明示する
+- install 直後の `agent.start` は `agent_pane_busy` になる（実測 3/3）。リトライと settled 待ちが必要。
+  herdr のエラー本文に code が含まれないため、`Outcome` に code を持たせないとリトライ判定ができない
 
 Phase 3 の検証（増分ごとに追記する）:
 
 - `fork` が worktree・環境・pane・Pi を作り、seed が届いて実装セッションが作業を始めること
-- `--no-install` と lockfile 無しのときに install を飛ばすこと
-- `--no-start` で pane を作らず worktree だけ作ること
+  → `acceptance-fork.sh`（30 passed / 0 failed、3a 完了時）
+- `--no-install` と lockfile 無しのときに install を飛ばすこと → `acceptance-fork.sh`
+- `--no-start` で pane を作らず worktree だけ作ること → `acceptance-fork.sh`
+- `fleet_fork` をツールとして agent が呼べること、引数不足が拒否されること
+  → `acceptance-fork.sh` 7〜8 節（実 pane の observer に呼ばせて確認）

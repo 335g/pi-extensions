@@ -20,7 +20,7 @@ herdr の pane/workspace トポロジと Pi のセッション意味論を繋ぐ
 | Phase | 内容 |
 |---|---|
 | 1（最初のコミット） | herdr クライアント層、① 承認ブローカー |
-| 2 | レシピ（layout の保存・復元） |
+| 2 | レシピ（layout の保存・復元）、worktree と環境の引き継ぎ |
 | 3（次ブランチ） | ③ 分岐 worktree ループ |
 
 ## 非目標
@@ -91,7 +91,30 @@ UI:
 - `pane_id` は保存時に落とす（再利用できない）
 - 起動コマンドまで再現するかは `apply --start` で分ける。既定はレイアウトのみ
 
-## 4. ③ のデータモデル（実装は Phase 3）
+## 4. worktree と環境の引き継ぎ (`worktree.ts`)
+
+worktree には git 管理外の開発環境が来ない。`.env` も `.envrc` も gitignore されているので、
+新しく切った worktree で Pi を起動すると `No API key found` で即死する（実際に踏んだ）。
+
+`createWorktree({ cwd, branch, label, base })`:
+
+1. `herdr worktree create` を呼び、返ってきた `checkout_path` と `workspace_id` を返す
+2. `propagateEnv(checkoutPath, cwd)` を実行する
+3. 結果（コピーしたファイル、direnv の状態）を返す
+
+`propagateEnv(worktreePath, sourceRoot)`:
+
+- `sourceRoot` から `.env*` と `.envrc` をコピーする。既に存在するファイルは上書きしない
+- `.envrc` をコピーした場合のみ `direnv allow <worktreePath>` を実行する
+- **元の `.envrc` が既に allow されている場合に限る。** `direnv status --json` の
+  `state.foundRC.allowed === 0` で判定する。allow されていない `.envrc` を新しい場所で
+  allow することは信頼の付与であり、拡張が勝手にやってはいけない
+- direnv が無い、または `.envrc` が無い場合はコピーだけして警告を返す
+- 失敗しても worktree の作成自体は成功として扱い、警告として報告する
+
+公開は `/fleet worktree create <branch>` から。③ の fork も同じ関数を使う。
+
+## 5. ③ のデータモデル（実装は Phase 3）
 
 作業スコープごとに「新しい pane へ渡す文脈の量」を変える。会話全体は渡さない。
 
@@ -117,6 +140,7 @@ packages/pi-herdr-fleet/
   herdr-client.ts   socket 接続、購読、縮退
   approvals.ts      ①
   recipes.ts        レシピ
+  worktree.ts       worktree 作成と環境の引き継ぎ
   README.md
   README.ja.md
   package.json
@@ -129,4 +153,6 @@ packages/pi-herdr-fleet/
 - `HERDR_ENV` の無い環境で拡張が無害に終了すること
 - blocked の検知 → overlay → 回答送信を、テスト用 pane を 1 つ立てて確認する
 - socket を切って再接続と再同期が動くこと
+- `.env` と `.envrc` を持つリポジトリで worktree を切り、環境変数が引き継がれること
+- 元の `.envrc` が allow されていない場合、新しい worktree で allow しないこと
 - `tsc --noEmit` が通ること

@@ -4,10 +4,11 @@
 
 [herdr](https://herdr.dev) の pane と Pi の間の承認ブローカー。herdr はどの pane が人間の返答を
 待っているかを知っている。`/fleet` はその一覧を、いま見ている pane の上に overlay で出し、pane を
-切り替えずに blocked のエージェントへ答える。
+切り替えずに blocked のエージェントへ答える。同じコマンドで tab のレイアウトを保存・復元し、
+git 管理外の開発環境を引き継いだ worktree も作れる。
 
-Phase 1 は herdr クライアント層と承認ブローカーまで。レイアウトのレシピと分岐 worktree ループは
-後のフェーズ。
+Phase 2 は herdr クライアント層、承認ブローカー、レシピ、worktree 作成まで。分岐 worktree ループが
+次のフェーズ。
 
 ## 動作条件
 
@@ -28,6 +29,11 @@ pi install npm:@335g/pi-herdr-fleet
 
 - `/fleet` — 承認待ちの pane の一覧を開く
 - `ctrl+shift+a` — コマンドを打たずに同じ一覧を開く
+- `/fleet recipe save <name>` — 現在の tab のレイアウトを保存する
+- `/fleet recipe apply <name> [--start]` — 新しい tab として復元する
+- `/fleet recipe ls` — 保存済みのレシピを一覧する
+- `/fleet worktree create <branch> [--base <ref>] [--label <text>]` — worktree を作り、開発環境を
+  引き継ぐ
 
 | キー | 動作 |
 |------|------|
@@ -64,6 +70,37 @@ pi install npm:@335g/pi-herdr-fleet
 
 自分自身の pane は一覧に出ない。自分に答えることはデッドロックになるため。
 
+## レシピ
+
+レシピは herdr の tab レイアウトそのもの。`/fleet recipe save dev` が現在の tab を export し、
+`LayoutNode` の木を `.pi/herdr-fleet/recipes/dev.json` に書く（pi を起動したディレクトリ基準）。
+`pane_id` だけは落とす。閉じた pane の id は再利用できないため。それ以外はそのまま保存する。
+
+`/fleet recipe apply dev` はその木を、現在の workspace に**新しい tab** として作る。tab 名は
+レシピ名。いまいる tab を置き換えることはしない。保存した木は元の tab id を持たないし、現在の tab を
+置き換えるとコマンドを実行したセッション自身が死ぬ。既定ではレイアウトのみで、pane は保存された
+`cwd` の素の shell として戻る。`--start` を付けると保存された起動コマンドも再現する。
+
+レシピ名はファイル名の1セグメントに制限する（`[A-Za-z0-9][A-Za-z0-9._-]*`）。名前はパスなので、
+`../` が通るとプロジェクトの外に書けてしまう。
+
+## worktree と環境の引き継ぎ
+
+`/fleet worktree create <branch>` は `herdr worktree create` を呼び、そのあと git 管理外の開発環境を
+新しい checkout にコピーする。
+
+- 元のルートにある `.env*`（`.env` / `.env.local` / `.env.example` / `.envrc` …）をコピーする。
+  **上書きはしない。** git が既に置いた `.env.example` はそのまま残す。
+- `direnv allow` は、**元の `.envrc` が既に allow されている場合のみ**新しい worktree に対して実行する。
+  判定は `direnv status --json` の `state.foundRC.allowed === 0`。allow されていない `.envrc` を
+  新しい場所で allow するのは信頼の付与で、拡張がたった今作った worktree に、ユーザが承認していない
+  コードを実行させることになる。だから真似するだけで、新しく与えることはしない。
+- direnv が無い、または元に `.envrc` が無い場合はコピーだけして警告を返す。
+- 途中で失敗しても失敗にはしない。worktree は存在するので、作成は成功として報告する。
+
+worktree には git が追跡しているものしか来ないため、このコピーが要る。無いと、切った直後に起動した
+Pi が `No API key found` で即死する。
+
 ## 通知
 
 新しく blocked になった pane は pi の通知を出す。切るには:
@@ -93,8 +130,11 @@ pi install npm:@335g/pi-herdr-fleet
 - pane の集合ごとに購読接続が 1 本要る。herdr の `pane.agent_status_changed` は `pane_id` 単位で、
   購読済みの接続に 2 つ目の `events.subscribe` を送ると接続が閉じられる。そのため pane が増えると
   接続も増える。溜め込みはしない。集合は snapshot から作り直して比較する。
-- レシピ（`/fleet recipe ...`、Phase 2）と分岐 worktree ループ（Phase 3）は未実装。
-- `/fleet` はまだ引数を取らない。
+- 分岐 worktree ループ（Phase 3）は未実装。`/fleet worktree create` は worktree を作って環境を
+  引き継ぐだけで、そこで何かを起動することはせず、workspace にフォーカスも移さない。
+- レシピが記録するのは 1 つの tab。workspace 全体を保存する手段は無いし、保存元の tab に復元する
+  手段も無い。
+- 環境マネージャは direnv しか見ていない。mise や asdf の類いは `.envrc` 経由でしか引き継がれない。
 
 ## 開発
 
@@ -107,6 +147,11 @@ node packages/pi-herdr-fleet/selfcheck.ts
 だけが並ぶこと、blocked から外れたら行が消えること、最初の snapshot では通知せず snapshot の読み直しで
 再通知しないこと、送信に失敗したら行が残ること、有効条件のガードを確認する。overlay も実際に描画し、
 全行の幅が揃っていることと枠が閉じていることを見る。
+
+レシピと環境のコピーは実際の一時ディレクトリで確認する。レシピが `cwd` / `env` / `command` を残して
+`pane_id` を落とすこと、`--start` がコマンド再現の有無を決めること、名前がレシピのディレクトリの外に
+出られないこと、そして direnv を差し替えて、allow されていない元の `.envrc` は新しい worktree でも
+allow されず、allow 済みのものは引き継がれること。
 
 このリポジトリに `tsconfig.json` は無いので、型チェックは明示的に実行する:
 

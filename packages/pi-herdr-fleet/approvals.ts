@@ -265,8 +265,18 @@ export interface Strings {
 	sending: string;
 	noQuestion: string;
 	blockedNotification(who: string): string;
-	unknownArgs: string;
+	unknownSubcommand(name: string): string;
 	state(entry: BlockedPane): string;
+	recipeUsage: string;
+	recipeSaving(name: string): string;
+	recipeSaved(name: string, panes: number, path: string): string;
+	recipeApplied(name: string, panes: number): string;
+	recipeNone: string;
+	recipeList(recipes: { name: string; panes: number }[]): string;
+	worktreeUsage: string;
+	worktreeCreating(branch: string): string;
+	worktreeCreated(branch: string, path: string, workspaceId: string, env: string): string;
+	worktreeWarningPrefix: string;
 }
 
 const JA: Strings = {
@@ -283,8 +293,18 @@ const JA: Strings = {
 	sending: "送信中…",
 	noQuestion: "（質問文を取得中…）",
 	blockedNotification: (who) => `${who} が承認待ちです`,
-	unknownArgs: "Phase 1 の /fleet は引数を取りません",
+	unknownSubcommand: (name) => `不明なサブコマンド: ${name}`,
 	state: (entry) => entry.state_labels?.blocked ?? "blocked",
+	recipeUsage: "使い方: /fleet recipe save <name> | apply <name> [--start] | ls",
+	recipeSaving: (name) => `レシピ ${name} を保存中…`,
+	recipeSaved: (name, panes, path) => `レシピ ${name} を保存しました（${panes} pane · ${path}）`,
+	recipeApplied: (name, panes) => `レシピ ${name} を新しい tab に適用しました（${panes} pane）`,
+	recipeNone: "レシピはまだありません",
+	recipeList: (recipes) => `レシピ: ${recipes.map((recipe) => `${recipe.name} (${recipe.panes})`).join(", ")}`,
+	worktreeUsage: "使い方: /fleet worktree create <branch> [--base <ref>] [--label <text>]",
+	worktreeCreating: (branch) => `worktree ${branch} を作成中…`,
+	worktreeCreated: (branch, path, workspaceId, env) => `worktree ${branch} を作成しました（${workspaceId} · ${path}）— ${env}`,
+	worktreeWarningPrefix: "worktree の環境:",
 };
 
 const EN: Strings = {
@@ -301,8 +321,18 @@ const EN: Strings = {
 	sending: "Sending...",
 	noQuestion: "(reading the question...)",
 	blockedNotification: (who) => `${who} is waiting for approval`,
-	unknownArgs: "/fleet takes no arguments in Phase 1",
+	unknownSubcommand: (name) => `Unknown subcommand: ${name}`,
 	state: (entry) => entry.state_labels?.blocked ?? "blocked",
+	recipeUsage: "Usage: /fleet recipe save <name> | apply <name> [--start] | ls",
+	recipeSaving: (name) => `Saving recipe ${name}...`,
+	recipeSaved: (name, panes, path) => `Saved recipe ${name} (${panes} panes · ${path})`,
+	recipeApplied: (name, panes) => `Applied recipe ${name} as a new tab (${panes} panes)`,
+	recipeNone: "No recipes yet",
+	recipeList: (recipes) => `Recipes: ${recipes.map((recipe) => `${recipe.name} (${recipe.panes})`).join(", ")}`,
+	worktreeUsage: "Usage: /fleet worktree create <branch> [--base <ref>] [--label <text>]",
+	worktreeCreating: (branch) => `Creating worktree ${branch}...`,
+	worktreeCreated: (branch, path, workspaceId, env) => `Created worktree ${branch} (${workspaceId} · ${path}) — ${env}`,
+	worktreeWarningPrefix: "worktree environment:",
 };
 
 export function strings(): Strings {

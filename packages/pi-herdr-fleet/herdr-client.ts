@@ -81,10 +81,12 @@ let requestSeq = 0;
 export class HerdrClient {
 	private readonly socketPath: string;
 	private readonly paneId: string;
+	private readonly workspaceId: string | undefined;
 
-	constructor(socketPath: string, paneId: string) {
+	constructor(socketPath: string, paneId: string, workspaceId?: string) {
 		this.socketPath = socketPath;
 		this.paneId = paneId;
+		this.workspaceId = workspaceId;
 	}
 
 	/** Undefined unless this process really runs inside a herdr-managed pane. */
@@ -92,11 +94,15 @@ export class HerdrClient {
 		const socketPath = process.env.HERDR_SOCKET_PATH;
 		const paneId = process.env.HERDR_PANE_ID;
 		if (process.env.HERDR_ENV !== "1" || !socketPath || !paneId) return undefined;
-		return new HerdrClient(socketPath, paneId);
+		return new HerdrClient(socketPath, paneId, process.env.HERDR_WORKSPACE_ID);
 	}
 
 	selfPaneId(): string {
 		return this.paneId;
+	}
+
+	selfWorkspaceId(): string | undefined {
+		return this.workspaceId;
 	}
 
 	/** One request on its own connection, so a lost reply cannot stall later calls. */

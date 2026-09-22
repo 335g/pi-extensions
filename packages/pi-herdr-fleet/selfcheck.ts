@@ -6,7 +6,7 @@
  * A fake herdr server replaces the real socket, so this runs anywhere.
  */
 
-import { rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,10 +14,27 @@ import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 import { ApprovalBroker, FleetOverlay, strings } from "./approvals.ts";
-import { HerdrClient, type SubscribeEvent } from "./herdr-client.ts";
+import { HerdrClient, type Outcome, type SubscribeEvent } from "./herdr-client.ts";
+import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
+import { type CommandResult, type CommandRunner, createWorktree, propagateEnv } from "./worktree.ts";
 
 const assert = (condition: boolean, message: string) => {
 	if (!condition) throw new Error(message);
+};
+
+const unwrap = <T>(outcome: Outcome<T>, what: string): T => {
+	if (!outcome.ok) throw new Error(`${what}: ${outcome.error}`);
+	return outcome.value;
+};
+
+/** Temp directories are real: the environment copy is a filesystem operation. */
+const scratch = mkdtempSync(join(tmpdir(), "pi-herdr-fleet-"));
+const tree = {
+	type: "split",
+	direction: "right",
+	ratio: 0.5,
+	first: { type: "pane", pane_id: "w1:p1", cwd: "/repo", label: "left" },
+	second: { type: "pane", pane_id: "w1:p2", cwd: "/repo", command: ["just", "test"], env: { ROLE: "tests" }, label: "tests" },
 };
 
 // ---------------------------------------------------------------- fake herdr
@@ -103,6 +120,28 @@ const server = net.createServer((socket) => {
 					}
 					openSubscriptions.add(socket);
 					reply({ result: { type: "subscription_started" } });
+					break;
+				case "layout.export":
+					reply({
+						result: {
+							type: "layout_export",
+							layout: { workspace_id: "w1", tab_id: "w1:t1", zoomed: false, focused_pane_id: "w1:p1", root: tree },
+						},
+					});
+					break;
+				case "layout.apply":
+					reply({ result: { type: "layout_apply", layout: { workspace_id: "w1", tab_id: "w1:t9", zoomed: false, focused_pane_id: "w1:p9", root: request.params.root } } });
+					break;
+				case "worktree.create":
+					reply({
+						result: {
+							type: "worktree_created",
+							workspace: { workspace_id: "w9" },
+							tab: {},
+							root_pane: {},
+							worktree: { path: join(scratch, "checkout"), branch: request.params.branch, label: request.params.label ?? "", is_bare: false, is_detached: false, is_prunable: false, is_linked_worktree: true },
+						},
+					});
 					break;
 				default:
 					break; // "silent": never answers, so the timeout path is reachable
@@ -261,6 +300,131 @@ try {
 	assert(lines[0]!.startsWith("╭") && lines.at(-1)!.endsWith("╯"), "the overlay box must be closed");
 	assert(lines.length <= 40, "the overlay must fit the terminal");
 
+	// ------------------------------------------------------------ recipes
+
+	const project = join(scratch, "project");
+	mkdirSync(project, { recursive: true });
+
+	const saved = unwrap(await saveRecipe(client, { cwd: project, name: "dev", paneId: "w1:p1" }), "saveRecipe");
+	assert(saved.panes === 2, `the recipe should count both panes: ${saved.panes}`);
+	const stored = JSON.parse(readFileSync(saved.path, "utf8"));
+	assert(
+		JSON.stringify(stored).includes("just") && stored.second.pane_id === undefined && stored.first.env === undefined,
+		"the recipe keeps the tree but drops pane ids",
+	);
+	assert(
+		unwrap(listRecipes(project), "listRecipes")
+			.map((recipe) => `${recipe.name}:${recipe.panes}`)
+			.join() === "dev:2",
+		"ls should list the recipe",
+	);
+	assert(!(await saveRecipe(client, { cwd: project, name: "../escape", paneId: "w1:p1" })).ok, "a name must not escape the recipe directory");
+
+	const applied = await applyRecipe(client, { cwd: project, name: "dev", start: false, workspaceId: "w1" });
+	assert(applied.ok, `applyRecipe should succeed: ${JSON.stringify(applied)}`);
+	const plain = received.filter((call) => call.method === "layout.apply").at(-1)!;
+	assert(JSON.stringify(plain.params.root).includes("just") === false, "without --start the saved commands are dropped");
+	assert(plain.params.tab_label === "dev" && plain.params.workspace_id === "w1", "apply must name the new tab and target the workspace");
+
+	const started = await applyRecipe(client, { cwd: project, name: "dev", start: true, workspaceId: "w1" });
+	assert(started.ok, "apply --start should succeed");
+	assert(
+		JSON.stringify(received.filter((call) => call.method === "layout.apply").at(-1)!.params.root).includes("just"),
+		"with --start the saved commands are kept",
+	);
+	assert(!(await applyRecipe(client, { cwd: project, name: "missing", start: false })).ok, "an unknown recipe must fail");
+
+	// ------------------------------------------------------------ worktree environment
+
+	const runs: { command: string; args: string[]; cwd?: string }[] = [];
+	let answer: (command: string, args: string[]) => CommandResult = () => ({ stdout: "", stderr: "", code: 0, killed: false });
+	const run: CommandRunner = async (command, args, options) => {
+		runs.push({ command, args, cwd: options?.cwd });
+		return answer(command, args);
+	};
+	const direnv = (allowed: number) => {
+		answer = (command, args) => {
+			if (command !== "direnv") return { stdout: "", stderr: "", code: 0, killed: false };
+			if (args[0] === "status") return { stdout: JSON.stringify({ state: { foundRC: { allowed } } }), stderr: "", code: 0, killed: false };
+			return { stdout: "", stderr: "", code: 0, killed: false };
+		};
+	};
+	const allows = () => runs.filter((call) => call.command === "direnv" && call.args[0] === "allow");
+	const prepare = (files: Record<string, string>) => {
+		const source = mkdtempSync(join(scratch, "source-"));
+		const checkout = mkdtempSync(join(scratch, "checkout-"));
+		for (const [name, content] of Object.entries(files)) writeFileSync(join(source, name), content);
+		return { source, checkout };
+	};
+
+	// An allowed source is mirrored into the worktree.
+	direnv(0);
+	runs.length = 0;
+	let dirs = prepare({ ".env": "TOKEN=1\n", ".envrc": "export A=1\n", ".env.example": "TOKEN=\n", "notes.md": "ignore me\n" });
+	let env = await propagateEnv(dirs.checkout, dirs.source, run);
+	assert(env.copied.join() === ".env,.env.example,.envrc", `only .env* is copied: ${env.copied.join()}`);
+	assert(readFileSync(join(dirs.checkout, ".env"), "utf8") === "TOKEN=1\n", "the .env content must be copied");
+	assert(env.allowed && allows().length === 1, `an allowed source must be allowed in the worktree: ${JSON.stringify(env)}`);
+	assert(allows()[0]!.args[1] === dirs.checkout, "direnv allow must target the new worktree");
+	assert(
+		runs.some((call) => call.command === "direnv" && call.args[0] === "status" && call.cwd === dirs.source),
+		"the trust check must read direnv's state for the source root",
+	);
+
+	// A source that is not allowed is never granted trust in the new worktree.
+	direnv(1);
+	runs.length = 0;
+	dirs = prepare({ ".envrc": "export A=1\n" });
+	env = await propagateEnv(dirs.checkout, dirs.source, run);
+	assert(!env.allowed && allows().length === 0, `an unallowed source must not be allowed: ${JSON.stringify(env)}`);
+	assert(env.warnings.length === 1, `the refusal has to be reported: ${JSON.stringify(env.warnings)}`);
+
+	// An existing file in the worktree wins.
+	direnv(0);
+	runs.length = 0;
+	dirs = prepare({ ".env": "TOKEN=from-source\n", ".envrc": "export A=1\n" });
+	writeFileSync(join(dirs.checkout, ".env"), "TOKEN=worktree\n");
+	env = await propagateEnv(dirs.checkout, dirs.source, run);
+	assert(readFileSync(join(dirs.checkout, ".env"), "utf8") === "TOKEN=worktree\n", "nothing may be overwritten");
+	assert(env.skipped.join() === ".env" && env.copied.join() === ".envrc", `skipped files must be reported: ${JSON.stringify(env)}`);
+
+	// No .envrc, and no direnv, are warnings rather than failures.
+	runs.length = 0;
+	dirs = prepare({ ".env": "TOKEN=1\n" });
+	env = await propagateEnv(dirs.checkout, dirs.source, run);
+	assert(env.copied.join() === ".env" && env.warnings.length === 1 && runs.length === 0, "no .envrc is a warning, not a direnv call");
+
+	runs.length = 0;
+	answer = () => ({ stdout: "", stderr: "", code: 1, killed: false });
+	dirs = prepare({ ".envrc": "export A=1\n" });
+	env = await propagateEnv(dirs.checkout, dirs.source, run);
+	assert(!env.allowed && env.warnings.length === 1 && allows().length === 0, `a missing direnv must only warn: ${JSON.stringify(env)}`);
+
+	// createWorktree: herdr makes the checkout, then the environment follows.
+	direnv(0);
+	runs.length = 0;
+	dirs = prepare({ ".env": "TOKEN=1\n", ".envrc": "export A=1\n" });
+	mkdirSync(join(scratch, "checkout"), { recursive: true });
+	const created = unwrap(await createWorktree(client, run, { cwd: dirs.source, branch: "feat/x", label: "x", base: "main" }), "createWorktree");
+	assert(created.path.endsWith("checkout") && created.workspaceId === "w9", "the checkout path and workspace id come from herdr");
+	assert(created.env.allowed, "the new worktree's environment must be propagated");
+	const create = received.filter((call) => call.method === "worktree.create").at(-1)!;
+	assert(
+		create.params.cwd === dirs.source && create.params.branch === "feat/x" && create.params.base === "main" && create.params.focus === false,
+		`worktree.create must not steal focus: ${JSON.stringify(create.params)}`,
+	);
+
+	// A failed environment step must not turn a created worktree into a failure.
+	rmSync(join(scratch, "checkout"), { recursive: true, force: true });
+	mkdirSync(join(scratch, "checkout"), { recursive: true });
+	dirs = prepare({ ".env": "TOKEN=2\n", ".envrc": "export A=1\n" });
+	answer = () => ({ stdout: "", stderr: "nope", code: 1, killed: false });
+	const tolerated = await createWorktree(client, run, { cwd: dirs.source, branch: "feat/y" });
+	assert(
+		tolerated.ok && readFileSync(join(scratch, "checkout", ".env"), "utf8") === "TOKEN=2\n" && tolerated.value.env.warnings.length > 0,
+		`a propagation failure is a warning, not a failure: ${JSON.stringify(tolerated)}`,
+	);
+
 	// ------------------------------------------------------------ registration guard
 
 	const registered = (env: Record<string, string | undefined>) => {
@@ -293,4 +457,5 @@ try {
 } finally {
 	server.close();
 	rmSync(socketPath, { force: true });
+	rmSync(scratch, { recursive: true, force: true });
 }

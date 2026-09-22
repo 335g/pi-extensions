@@ -695,6 +695,50 @@ try {
 	assert((await refusal({ branch: "", task: "" })).includes("required"), "an empty request must fail the tool call");
 	assert((await refusal({ branch: "feat/x", task: "do it" }, "print")).includes("interactive"), "outside a TUI session the tool refuses");
 
+	// ------------------------------------------------------------ linked worktree
+
+	/** git's answers: one helper, so each test states only the answers it needs. */
+	const gitAnswer = (responses: Record<string, string>) => (command: string, args: string[]) => {
+		const stdout = command === "git" ? responses[args.join(" ")] ?? responses[args[0]!] ?? "" : "";
+		return { stdout, stderr: "", code: 0, killed: false };
+	};
+
+	// `worktree.create` refuses a linked worktree as its source, so the call is
+	// redirected to the main checkout with the caller's own HEAD pinned as base —
+	// without the pin the fork point would silently move to the main checkout.
+	const mainPath = mkdtempSync(join(scratch, "main-"));
+	const linkedPath = mkdtempSync(join(scratch, "linked-"));
+	const pinned = "a".repeat(40);
+	answer = gitAnswer({
+		"worktree list --porcelain": `worktree ${mainPath}\nHEAD ${pinned}\nbranch refs/heads/main\n\nworktree ${linkedPath}\nHEAD ${pinned}\nbranch refs/heads/feat/outer\n\n`,
+		"rev-parse --show-toplevel": `${linkedPath}\n`,
+		"rev-parse": `${pinned}\n`,
+		status: " M file.txt\n",
+	});
+	received.length = 0;
+	const relocated = unwrap(
+		await createWorktree(client, run, { cwd: linkedPath, branch: "feat/inner" }),
+		"createWorktree from a linked worktree",
+	);
+	const relocatedCall = received.filter((call) => call.method === "worktree.create").at(-1)!;
+	assert(relocatedCall.params.cwd === mainPath, `the source must be the main checkout: ${JSON.stringify(relocatedCall.params)}`);
+	assert(relocatedCall.params.base === pinned, `the caller's HEAD must be pinned: ${JSON.stringify(relocatedCall.params)}`);
+	assert(relocated.warnings.length === 2, `the detour and the uncommitted changes must be reported: ${JSON.stringify(relocated.warnings)}`);
+
+	// From the main checkout nothing is redirected, and an explicit base is kept.
+	mkdirSync(join(scratch, "checkout"), { recursive: true });
+	answer = gitAnswer({
+		"worktree list --porcelain": `worktree ${mainPath}\nHEAD ${pinned}\nbranch refs/heads/main\n\n`,
+		"rev-parse --show-toplevel": `${mainPath}\n`,
+	});
+	received.length = 0;
+	const inPlace = unwrap(await createWorktree(client, run, { cwd: mainPath, branch: "feat/plain", base: "main" }), "createWorktree in the main checkout");
+	const plainCall = received.filter((call) => call.method === "worktree.create").at(-1)!;
+	assert(
+		plainCall.params.cwd === mainPath && plainCall.params.base === "main" && inPlace.warnings.length === 0,
+		`the main checkout is passed through untouched: ${JSON.stringify(plainCall.params)}`,
+	);
+
 	// ------------------------------------------------------------ author session
 
 	// The author's session is JSONL and grows to megabytes, so only the assistant
@@ -735,13 +779,6 @@ try {
 	assert(capped.text.includes("M399") && !capped.text.includes("M0"), "the newest message survives and the oldest does not");
 
 	// ------------------------------------------------------------ review
-
-	/** git's answers for the review: one helper, so each test states only its answers. */
-	const gitAnswer = (responses: Record<string, string>) => (command: string, args: string[]) => {
-		const stdout = command === "git" ? responses[args.join(" ")] ?? responses[args[0]!] ?? "" : "";
-		return { stdout, stderr: "", code: 0, killed: false };
-	};
-	mkdirSync(join(scratch, "checkout"), { recursive: true });
 
 	snapshot.agents.push({
 		pane_id: "w1:p7",

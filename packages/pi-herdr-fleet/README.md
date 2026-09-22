@@ -287,6 +287,9 @@ herdr is the source of truth. The extension holds no state it cannot rebuild:
   snapshot and compared.
 - The fork loop has no second half yet. A review is started and its verdict is text that nothing
   reads yet, and nothing gates a merge (3c). There is no list of the worktrees you have forked.
+- `worktree.create` cannot branch from a linked worktree, so `/fleet fork` from inside one is created
+  from the main checkout, pinned to the caller's HEAD. Uncommitted changes there stay behind; the
+  command warns when there are any.
 - Neither `/fleet worktree create` nor `/fleet fork` moves your focus: the new workspace is built in
   the background.
 - A recipe records one tab. There is no way to save a whole workspace, and no way to restore into
@@ -373,6 +376,10 @@ worktree. The checks are on the reviewer's own session file — the task, the di
 and a fragment of the author's report, which is the one thing no `git` command produces — and then on
 the reviewer's last reply, which has to end with a verdict. The worktree has to be clean afterwards,
 because the reviewer was told to be read-only.
+
+Last, a fork started from a linked worktree: a worktree is created from the main checkout, with a
+commit that exists only in the linked one proving the fork point was pinned to the caller's HEAD, and
+its uncommitted change left behind. Both are reported as warnings.
 
 There is no `tsconfig.json` in this repo, so the type check is explicit:
 

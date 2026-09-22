@@ -16,7 +16,7 @@
  * shell the user can watch instead of inside the main session's process.
  */
 
-import { copyFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { type HerdrClient, type Outcome, err, ok } from "./herdr-client.ts";
@@ -39,6 +39,7 @@ export type CommandRunner = (
 const ENV_PREFIX = ".env";
 const PROBE_TIMEOUT_MS = 10_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
+const GIT_TIMEOUT_MS = 15_000;
 /** The socket's own timeout has to outlast herdr's, or every install looks dead. */
 const REQUEST_SLACK_MS = 10_000;
 const AGENT_START_TIMEOUT_MS = 60_000;
@@ -64,6 +65,8 @@ export interface CreatedWorktree {
 	rootPaneId?: string;
 	branch?: string | null;
 	env: EnvPropagation;
+	/** Warnings about the checkout itself, as opposed to its environment. */
+	warnings: string[];
 }
 
 export interface CreateWorktreeOptions {
@@ -84,11 +87,13 @@ export async function createWorktree(
 	run: CommandRunner,
 	options: CreateWorktreeOptions,
 ): Promise<Outcome<CreatedWorktree>> {
+	const source = await resolveSource(run, options.cwd, options.base);
+	if (!source.ok) return source;
 	const response = await client.request("worktree.create", {
-		cwd: options.cwd,
+		cwd: source.value.cwd,
 		branch: options.branch,
 		label: options.label,
-		base: options.base,
+		base: source.value.base ?? options.base,
 		// Background work by default; ③ creates worktrees the user is not looking at.
 		focus: false,
 	});
@@ -101,6 +106,8 @@ export async function createWorktree(
 		return err("worktree.create: no worktree path in the response");
 	}
 
+	// The environment comes from the caller's own checkout, not from the main one:
+	// what a fork carries over is the environment it was started in.
 	const env = await propagateEnv(path, options.cwd, run);
 	const rootPaneId = created?.root_pane?.pane_id;
 	return ok({
@@ -109,7 +116,88 @@ export async function createWorktree(
 		rootPaneId: typeof rootPaneId === "string" ? rootPaneId : undefined,
 		branch: created.worktree.branch ?? undefined,
 		env,
+		warnings: source.value.warnings,
 	});
+}
+
+// ------------------------------------------------------- worktree source
+
+interface WorktreeSource {
+	/** What `worktree.create` is given as its `cwd`. */
+	cwd: string;
+	/** The ref to branch from, when the caller's own HEAD has to be pinned. */
+	base?: string;
+	warnings: string[];
+}
+
+interface GitWorktree {
+	path: string;
+	branch?: string;
+}
+
+/**
+ * Which checkout `worktree.create` may be told to branch from.
+ *
+ * herdr refuses a linked worktree as the source (`linked_worktree_source`), so a
+ * fork started inside one is created from the main checkout instead — that is
+ * the first entry of `git worktree list`.
+ *
+ * The cost of that detour is the fork point: `worktree.create` with no `base`
+ * would branch from the main checkout's HEAD, which is not where the caller is.
+ * So the caller's HEAD is resolved to a commit and passed as `base`. Uncommitted
+ * changes cannot be part of a commit, so they are warned about rather than
+ * silently left behind.
+ */
+async function resolveSource(run: CommandRunner, cwd: string, base: string | undefined): Promise<Outcome<WorktreeSource>> {
+	const unchanged: WorktreeSource = { cwd, warnings: [] };
+	const worktrees = await gitWorktrees(run, cwd);
+	// Not a repository, or a git too old for `--porcelain`: let herdr report it.
+	if (!worktrees || worktrees.length === 0) return ok(unchanged);
+
+	const main = worktrees[0]!;
+	const toplevel = await git(run, ["rev-parse", "--show-toplevel"], cwd);
+	if (toplevel.code !== 0 || samePath(toplevel.stdout.trim(), main.path)) return ok(unchanged);
+
+	// `base` is resolved here, in the caller's checkout, because the main one may
+	// resolve it differently: a bare `HEAD` names each worktree's own commit.
+	const pinned = await git(run, ["rev-parse", "--verify", "--quiet", base ?? "HEAD"], cwd);
+	const commit = pinned.stdout.trim();
+	if (pinned.code !== 0 || commit === "") return err(`worktree: cannot resolve ${base ?? "HEAD"} in ${cwd}`);
+
+	const warnings = [`created from the main checkout at ${main.path}: herdr cannot branch from a linked worktree`];
+	const status = await git(run, ["status", "--porcelain"], cwd);
+	if (status.code === 0 && status.stdout.trim() !== "") {
+		warnings.push(`uncommitted changes in ${cwd} are not part of the fork`);
+	}
+	return ok({ cwd: main.path, base: commit, warnings });
+}
+
+/** `git worktree list --porcelain`, or nothing when git cannot answer. */
+async function gitWorktrees(run: CommandRunner, cwd: string): Promise<GitWorktree[] | undefined> {
+	const result = await git(run, ["worktree", "list", "--porcelain"], cwd);
+	if (result.code !== 0) return undefined;
+	const worktrees: GitWorktree[] = [];
+	for (const line of result.stdout.split("\n")) {
+		if (line.startsWith("worktree ")) worktrees.push({ path: line.slice("worktree ".length).trim() });
+		else if (line.startsWith("branch ")) worktrees.at(-1)!.branch = line.slice("branch ".length).trim();
+	}
+	return worktrees;
+}
+
+/** Symlinks differ between git and a caller's shell (`/tmp` against `/private/tmp`). */
+function samePath(left: string, right: string): boolean {
+	const resolve = (path: string) => {
+		try {
+			return realpathSync(path);
+		} catch {
+			return path;
+		}
+	};
+	return resolve(left) === resolve(right);
+}
+
+function git(run: CommandRunner, args: string[], cwd: string): Promise<CommandResult> {
+	return run("git", args, { cwd, timeout: GIT_TIMEOUT_MS });
 }
 
 // ---------------------------------------------------------------- preparation

@@ -276,6 +276,9 @@ worktree がどの workspace にも開かれていないブランチは拒否す
   接続も増える。溜め込みはしない。集合は snapshot から作り直して比較する。
 - 分岐 worktree ループにはまだ後半が無い。レビューは起動するが、その verdict はまだ誰も読まないテキスト
   で、マージを止めるものも無い（3c）。fork した worktree の一覧も無い。
+- `worktree.create` は linked worktree を分岐元にできない。そのため linked worktree の中からの
+  `/fleet fork` は main checkout から作られ、呼び出し元の HEAD に固定される。そこにある未コミットの
+  変更は fork に入らない。ある場合は警告を出す。
 - `/fleet worktree create` も `/fleet fork` もフォーカスを移さない。新しい workspace は裏で作られる。
 - レシピが記録するのは 1 つの tab。workspace 全体を保存する手段は無いし、保存元の tab に復元する
   手段も無い。
@@ -351,6 +354,10 @@ agent に `fleet_fork` を呼ばせ、worktree、pane、observer の会話に残
 見るのはレビュワー自身のセッションファイル — タスク、diff、verdict の形、そして作者の報告の断片。
 報告は `git` では出せない唯一の材料になる。そのあとレビュワーの最後の返答が verdict で終わることを
 見る。指示どおり読み取り専用だったかを、worktree が汚れていないことで確かめる。
+
+最後に linked worktree からの fork。main checkout から worktree が作られ、linked 側にしか無いコミット
+で fork 点が呼び出し元の HEAD に固定されたことを確かめる。未コミットの変更は引き継がれず、どちらも警告
+として出る。
 
 このリポジトリに `tsconfig.json` は無いので、型チェックは明示的に実行する:
 

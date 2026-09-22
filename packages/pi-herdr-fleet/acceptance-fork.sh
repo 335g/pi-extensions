@@ -659,6 +659,75 @@ else
 	fail "the reviewer changed the worktree: $(git -C "$FULL_PATH" status --porcelain | head -3)"
 fi
 
+# ---------------------------------------------------------------- 10. linked worktree
+
+# herdr refuses a linked worktree as `worktree.create`'s source, so a fork from
+# one is created from the main checkout with the caller's own HEAD pinned. The
+# commit here is what proves the pinning: it exists only in the linked worktree.
+
+say "10. fork from a linked worktree (resolved to the main checkout)"
+OUTER_BRANCH="$PREFIX/outer"
+herdr pane send-text "$OBSERVER" "/fleet worktree create $OUTER_BRANCH --label outer-$$" >/dev/null 2>&1
+sleep 0.7
+herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1
+deadline=$((SECONDS + 180))
+while [ "$SECONDS" -lt "$deadline" ] && [ -z "$(worktree_field "$OUTER_BRANCH" path)" ]; do sleep 1; done
+OUTER_PATH="$(worktree_field "$OUTER_BRANCH" path)"
+OUTER_WS="$(worktree_field "$OUTER_BRANCH" open_workspace_id)"
+if [ -n "$OUTER_PATH" ]; then
+	ok "linked worktree opened on $OUTER_BRANCH at $OUTER_PATH"
+else
+	fail "the linked worktree was not created"
+fi
+
+# A commit that exists only here, and a change that was never committed.
+printf 'outer\n' >"$OUTER_PATH/outer-marker.txt"
+git -C "$OUTER_PATH" add -A
+git -C "$OUTER_PATH" -c user.email=fleet@accept -c user.name=fleet commit -qm "outer base"
+printf 'dirty\n' >>"$OUTER_PATH/outer-marker.txt"
+OUTER_HEAD="$(git -C "$OUTER_PATH" rev-parse HEAD)"
+ok "the linked worktree is at its own commit ($OUTER_HEAD), with an uncommitted change"
+
+OUTER_OBSERVER="$(pane_in_workspace "$OUTER_WS")"
+OUTER_SESSION="$SCRATCH/outer-observer.jsonl"
+herdr agent start "fleet-outer-$$" --kind pi --pane "$OUTER_OBSERVER" --timeout 60000 \
+	-- -ne -e "$EXTENSION" --session "$OUTER_SESSION" >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+	ok "observer Pi started inside the linked worktree"
+else
+	fail "observer Pi did not start in the linked worktree"
+fi
+sleep 3
+
+INNER_BRANCH="$PREFIX/inner"
+INNER_TASK="Reply with the single word LINKED and do nothing else."
+herdr pane send-text "$OUTER_OBSERVER" "/fleet fork $INNER_BRANCH --task \"$INNER_TASK\" --no-install" >/dev/null 2>&1
+sleep 0.7
+herdr pane send-keys "$OUTER_OBSERVER" enter >/dev/null 2>&1
+INNER_TOASTS="$(await_fork "$INNER_BRANCH" yes "$OUTER_OBSERVER")"
+INNER_PATH="$(worktree_field "$INNER_BRANCH" path)"
+if [ -n "$INNER_PATH" ]; then
+	ok "the fork from a linked worktree opened a worktree ($INNER_PATH)"
+else
+	fail "the fork from a linked worktree created no worktree"
+	herdr pane read "$OUTER_OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+fi
+
+# The fork point is the caller's own commit, which exists nowhere else. The log
+# is captured first: `grep -q` in a pipeline exits on the first match, and under
+# `pipefail` that can turn a match into a failure.
+INNER_LOG="$(git -C "$INNER_PATH" log --oneline 2>/dev/null)"
+if printf '%s' "$INNER_LOG" | grep -q "outer base"; then
+	ok "the fork point is the caller's HEAD, not the main checkout's"
+else
+	fail "the fork did not branch from the caller's HEAD: $(printf '%s' "$INNER_LOG" | head -3)"
+fi
+check "the uncommitted change was not carried in" '^outer$' "$(cat "$INNER_PATH/outer-marker.txt" 2>/dev/null)"
+check "the fork says it was created from the main checkout" 'created from the main checkout at' "$INNER_TOASTS"
+check "the fork says the uncommitted change stays behind" 'uncommitted changes' "$INNER_TOASTS"
+INNER_PANE="$(pane_in_workspace "$(worktree_field "$INNER_BRANCH" open_workspace_id)" pi)"
+[ -n "$INNER_PANE" ] && ok "the fork started a Pi session as usual ($INNER_PANE)" || fail "no Pi agent in the inner fork's workspace"
+
 # ---------------------------------------------------------------- result
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

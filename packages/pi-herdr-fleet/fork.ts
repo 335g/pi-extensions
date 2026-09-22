@@ -50,6 +50,8 @@ export interface ForkedWorktree {
 	/** Absent when nothing needed installing, or installation was skipped. */
 	install?: InstallOutcome;
 	env: EnvPropagation;
+	/** Warnings about the checkout itself: the environment has its own, in `env`. */
+	warnings: string[];
 }
 
 /**
@@ -77,11 +79,11 @@ export async function forkWorktree(
 	const base = request.base?.trim() || undefined;
 	const created = await createWorktree(client, run, { cwd: request.cwd, branch, base, label: branch });
 	if (!created.ok) return created;
-	const { env, path, workspaceId, rootPaneId } = created.value;
+	const { env, path, workspaceId, rootPaneId, warnings } = created.value;
 	// Everything past this point has to say that the checkout is already there,
 	// because it is: a failed fork leaves a worktree behind.
 	const afterCreate = (error: string) => `fork: ${error} (the worktree at ${path} was created)`;
-	const forked: ForkedWorktree = { path, branch: created.value.branch ?? branch, workspaceId, env };
+	const forked: ForkedWorktree = { path, branch: created.value.branch ?? branch, workspaceId, env, warnings };
 
 	if (request.start === false) return ok(forked);
 
@@ -173,6 +175,7 @@ function report(forked: ForkedWorktree): string {
 		const { command, error, ok } = forked.install;
 		lines.push(`prepare: ${ok ? `${command} finished` : `${command} failed (${error})`}`);
 	}
+	for (const warning of forked.warnings) lines.push(`warning: ${warning}`);
 	for (const warning of forked.env.warnings) lines.push(`warning: ${warning}`);
 	return lines.join("\n");
 }

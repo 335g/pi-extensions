@@ -228,6 +228,7 @@ export default function (pi: ExtensionAPI) {
 		const state =
 			session === undefined ? t.forkNoStart : t.forkRunning(session.paneId, session.agent, installSummary(install, t));
 		ctx.ui.notify(t.forkCreated(forked.value.branch, path, workspaceId, state), install?.ok === false ? "warning" : "info");
+		for (const warning of forked.value.warnings) ctx.ui.notify(`${t.fleetWarningPrefix} ${warning}`, "warning");
 		for (const warning of env.warnings) ctx.ui.notify(`${t.worktreeWarningPrefix} ${warning}`, "warning");
 	}
 

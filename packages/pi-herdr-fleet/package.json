@@ -1,0 +1,37 @@
+{
+  "name": "@335g/pi-herdr-fleet",
+  "version": "0.0.1",
+  "description": "Approval broker between herdr panes and Pi: answer a blocked pane from the pane you are looking at.",
+  "type": "module",
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "herdr"
+  ],
+  "author": "Yoshiki Kudo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/335g/pi-extensions.git",
+    "directory": "packages/pi-herdr-fleet"
+  },
+  "files": [
+    "index.ts",
+    "herdr-client.ts",
+    "approvals.ts"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -904,6 +904,36 @@ else
 	fail "the reviewer did not approve (verdict: ${VERDICT:-none}), so the gate could not be shown to open"
 fi
 
+# ---------------------------------------------------------------- 14. review tool
+
+# `fleet_review` as a tool, not a command: this is the call an agent makes in the
+# loop, with its arguments validated by the schema before `reviewWorktree` sees
+# them. The branch here is the one section 7 forked through `fleet_fork`, so the
+# whole loop — fork, review — is exercised through tools. The reviewer's verdict
+# is not asserted: this is about the tool being callable and being recorded as
+# the reviewer, and its worktree is empty so it has nothing to approve.
+
+say "14. fleet_review as a tool"
+TOOL_REVIEW_BRANCH="$PREFIX/tool"
+TOOL_REVIEW_TASK="Reply with the single word TOOLMARKER and do nothing else."
+ask "Call the fleet_review tool exactly once with branch \"$TOOL_REVIEW_BRANCH\" and task \"$TOOL_REVIEW_TASK\". Then stop."
+TOOL_REVIEW_PANE=""
+deadline=$((SECONDS + 420))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	TOOL_REVIEW_PANE="$(run_field "$TOOL_REVIEW_BRANCH" reviewer.paneId)"
+	[ -n "$TOOL_REVIEW_PANE" ] && break
+	sleep 1
+done
+if [ -n "$TOOL_REVIEW_PANE" ]; then
+	ok "the fleet_review tool started a reviewer in the author's worktree ($TOOL_REVIEW_PANE)"
+else
+	fail "the fleet_review tool started no reviewer"
+	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+fi
+check "the tool result reached the observer's conversation" "reviewing $TOOL_REVIEW_BRANCH" "$(grep -a "reviewing $TOOL_REVIEW_BRANCH" "$OBSERVER_SESSION" 2>/dev/null | tail -1)"
+TOOL_REVIEW_AGENT="$(run_field "$TOOL_REVIEW_BRANCH" reviewer.agentName)"
+[ -n "$TOOL_REVIEW_AGENT" ] && ok "the tool path recorded its reviewer ($TOOL_REVIEW_AGENT)" || fail "the tool path recorded no reviewer"
+
 # ---------------------------------------------------------------- result
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

@@ -14,61 +14,21 @@
 # itself as blocked; the subject has to be somewhere else entirely.
 #
 # Run it from inside a herdr pane (HERDR_ENV=1) anywhere in this repository.
-# It closes only the panes it created.
+# It closes only the panes it created. The harness is shared with
+# acceptance-fork.sh; this script stays the fast one, at about half a minute.
 #
 #   packages/pi-herdr-fleet/acceptance.sh
 #
 set -uo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/acceptance-lib.sh"
 
-EXTENSION="$(cd "$(dirname "$0")" && pwd)/index.ts"
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PROMPT_SCRIPT="$(mktemp -t fleet-acceptance)"
-SUBJECT=""
-OBSERVER=""
-PASS=0
-FAIL=0
-
-cleanup() {
-	# Only the panes this run created; the caller's pane is never touched.
-	for pane in "$OBSERVER" "$SUBJECT"; do
-		[ -n "$pane" ] && herdr pane close "$pane" >/dev/null 2>&1
-	done
-	rm -f "$PROMPT_SCRIPT"
-}
-trap cleanup EXIT
-
-say() { printf '\n== %s\n' "$1"; }
-ok() { PASS=$((PASS + 1)); printf '   ok    %s\n' "$1"; }
-fail() {
-	FAIL=$((FAIL + 1))
-	printf '   FAIL  %s\n' "$1"
-}
-check() { # check <description> <pattern> <text>
-	if printf '%s' "$3" | grep -qE "$2"; then ok "$1"; else fail "$1 (no match for /$2/)"; fi
-}
-expect_absent() { # expect_absent <description> <pattern> <text>
-	if printf '%s' "$3" | grep -qE "$2"; then fail "$1 (unexpected match for /$2/)"; else ok "$1"; fi
-}
-
-# `herdr pane read` prints the pane text directly; `visible` is the screen.
-screen() { herdr pane read "$1" --source visible --lines 60 2>/dev/null; }
-history() { herdr pane read "$1" --source recent-unwrapped --lines 200 2>/dev/null; }
-pane_id_of() { sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' | head -1; }
-split_pane() { # split_pane <pane> <direction> -> new pane id
-	herdr pane split "$1" --direction "$2" --cwd "$ROOT" --no-focus 2>/dev/null | pane_id_of
-}
+register_path "$PROMPT_SCRIPT"
 
 # ---------------------------------------------------------------- preflight
 
-if [ "${HERDR_ENV:-}" != "1" ]; then
-	echo "not running inside a herdr pane (HERDR_ENV != 1)" >&2
-	exit 2
-fi
-if [ ! -f "$EXTENSION" ]; then
-	echo "missing extension entry: $EXTENSION" >&2
-	exit 2
-fi
-[ -f "$ROOT/.envrc" ] || printf 'warning: no .envrc at %s; the observer may have no API key\n' "$ROOT" >&2
+fleet_preflight
+[ -f "$FLEET_ROOT/.envrc" ] || printf 'warning: no .envrc at %s; the observer may have no API key\n' "$FLEET_ROOT" >&2
 
 # The subject asks a question and waits. A synthetic agent is enough: herdr only
 # needs to report the pane as blocked, and this keeps the run deterministic.
@@ -81,39 +41,29 @@ SH
 # ---------------------------------------------------------------- 1. subject
 
 say "1. subject pane"
-SUBJECT="$(split_pane "${HERDR_PANE_ID}" down)"
-if [ -z "$SUBJECT" ]; then
+if ! split_pane "${HERDR_PANE_ID}" down "$FLEET_ROOT"; then
 	echo "could not split a subject pane" >&2
 	exit 1
 fi
+SUBJECT="$FLEET_NEW_PANE"
 printf '   subject: %s\n' "$SUBJECT"
 sleep 1
 
 # ---------------------------------------------------------------- 2. observer
 
 say "2. observer pane (Pi + this extension)"
-OBSERVER="$(split_pane "$SUBJECT" right)"
-if [ -z "$OBSERVER" ]; then
+if ! split_pane "$SUBJECT" right "$FLEET_ROOT"; then
 	echo "could not split an observer pane" >&2
 	exit 1
 fi
+OBSERVER="$FLEET_NEW_PANE"
 printf '   observer: %s\n' "$OBSERVER"
 sleep 1
 
-# The cwd is $ROOT so direnv loads .envrc and hands the observer an API key.
-# Without the environment copy that Phase 2 does, this Pi dies on startup.
-# `-ne` keeps this a test of *this* extension: another installed extension could
-# take ctrl+shift+a, or paint over the screen the checks read.
-herdr agent start "fleet-accept-$$" --kind pi --pane "$OBSERVER" --timeout 60000 \
-	-- -ne -e "$EXTENSION" >/dev/null 2>&1
-if [ $? -eq 0 ]; then
-	ok "observer Pi started (direnv supplied the environment)"
-else
-	fail "observer Pi did not start"
-	history "$OBSERVER"
-	exit 1
-fi
-sleep 2
+# The cwd is the repository root, so direnv loads .envrc and hands the observer
+# an API key. Without the environment copy that Phase 2 does, this Pi dies on
+# startup.
+start_observer "observer Pi started (direnv supplied the environment)" "fleet-accept-$$" "$OBSERVER" || exit 1
 
 # ---------------------------------------------------------------- 3. blocked
 
@@ -190,5 +140,4 @@ fi
 
 # ---------------------------------------------------------------- result
 
-printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
-[ "$FAIL" -eq 0 ]
+fleet_result

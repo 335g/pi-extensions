@@ -18,12 +18,13 @@
 # provider.
 #
 # Run it from inside a herdr pane (HERDR_ENV=1) anywhere in this repository.
+# The harness is shared with acceptance.sh, which stays the fast one.
 #
 #   packages/pi-herdr-fleet/acceptance-fork.sh
 #
 set -uo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/acceptance-lib.sh"
 
-EXTENSION="$(cd "$(dirname "$0")" && pwd)/index.ts"
 SCRATCH="$(mktemp -d -t fleet-fork-accept)"
 # The name is unique so the worktree parent directory herdr creates for it is
 # this run's alone, and safe to remove.
@@ -36,8 +37,8 @@ OBSERVER=""
 # pane never reports a session path. Pinning the file is how the checks below can
 # read what the observer's agent actually did.
 OBSERVER_SESSION="$SCRATCH/observer.jsonl"
-PASS=0
-FAIL=0
+register_path "$SCRATCH"
+register_path "$WT_PARENT"
 
 # Every workspace a fork created is reached through the worktree herdr opened for
 # it, so the branch prefix is the only handle needed to clean up. The path comes
@@ -56,51 +57,18 @@ for worktree in worktrees:
 ' "$PREFIX"
 }
 
-cleanup() {
-	if [ -d "$REPO" ]; then
-		while IFS=$'\t' read -r workspace path; do
-			[ -n "$path" ] && direnv deny "$path" >/dev/null 2>&1
-			[ -n "$workspace" ] && herdr worktree remove --workspace "$workspace" --force >/dev/null 2>&1
-		done < <(fork_worktrees)
-	fi
-	[ -n "$OBSERVER_WS" ] && herdr workspace close "$OBSERVER_WS" >/dev/null 2>&1
+# The registry in the harness removes every worktree this run recorded. This
+# catches the one case that cannot record itself: a fork that died before the
+# script could read its worktree back.
+cleanup_fork_leftovers() {
+	local workspace path
+	while IFS=$'\t' read -r workspace path; do
+		[ -n "$path" ] && direnv deny "$path" >/dev/null 2>&1
+		[ -n "$workspace" ] && herdr worktree remove --workspace "$workspace" --force >/dev/null 2>&1
+	done < <(fork_worktrees)
 	direnv deny "$REPO" >/dev/null 2>&1
-	rm -rf "$SCRATCH" "$WT_PARENT"
 }
-trap cleanup EXIT
-
-say() { printf '\n== %s\n' "$1"; }
-ok() { PASS=$((PASS + 1)); printf '   ok    %s\n' "$1"; }
-fail() {
-	FAIL=$((FAIL + 1))
-	printf '   FAIL  %s\n' "$1"
-}
-check() { # check <description> <pattern> <text>
-	# A here-string, not a pipe: `grep -q` exits on the first match, and under
-	# `pipefail` the SIGPIPE that gives `printf` turns a matching check into a
-	# failure once the sampled text grows past a pipe buffer.
-	if grep -qE "$2" <<<"$3"; then ok "$1"; else fail "$1 (no match for /$2/)"; fi
-}
-
-# `herdr pane read` prints the pane text directly; `recent-unwrapped` keeps the
-# toasts this script asserts on. A blocked read is bounded here: the loops below
-# only re-check their deadline between calls, so one that never returns would
-# hang the whole run.
-history() { # history <pane>
-	local file pid watchdog
-	file="$(mktemp)"
-	herdr pane read "$1" --source recent-unwrapped --lines 200 >"$file" 2>/dev/null </dev/null &
-	pid=$!
-	# The watchdog's own fds are closed: a live child holding the command
-	# substitution's stdout open would make `$(history ...)` wait for it.
-	(sleep 20; kill -9 "$pid" 2>/dev/null) </dev/null >/dev/null 2>&1 &
-	watchdog=$!
-	wait "$pid" 2>/dev/null
-	kill "$watchdog" 2>/dev/null
-	wait "$watchdog" 2>/dev/null
-	cat "$file"
-	rm -f "$file"
-}
+on_cleanup cleanup_fork_leftovers
 
 worktree_field() { # worktree_field <branch> <json field>
 	herdr worktree list --cwd "$REPO" 2>/dev/null | python3 -c '
@@ -194,10 +162,12 @@ fork() { # fork <branch> <task> [flags...]
 
 # Wait for a fork to be done while sampling the observer's screen. The worktree
 # appears first; the pane and the agent follow the install, and the notification
-# comes after the seed, so sampling continues past the point where work is done —
-# a toast only lives on screen for a few seconds.
-await_fork() { # await_fork <branch> <yes|no: expect an agent> [pane] -> the sampled screen
-	local branch="$1" want_agent="$2" pane="${3:-$OBSERVER}" deadline=$((SECONDS + 300)) text="" done_at=""
+# comes after the seed, so a caller that reads the toast keeps sampling past the
+# point where the work is done — a toast only lives on screen for a few seconds.
+# A caller that only needs the fork to have happened passes `dwell 0` and skips
+# that wait; the agent is still awaited either way.
+await_fork() { # await_fork <branch> <yes|no: expect an agent> [pane] [dwell seconds] -> the sampled screen
+	local branch="$1" want_agent="$2" pane="${3:-$OBSERVER}" dwell="${4:-25}" deadline=$((SECONDS + 300)) text="" done_at=""
 	while [ "$SECONDS" -lt "$deadline" ]; do
 		text="$text$(history "$pane")"
 		if [ -n "$(worktree_field "$branch" path)" ]; then
@@ -207,7 +177,7 @@ await_fork() { # await_fork <branch> <yes|no: expect an agent> [pane] -> the sam
 				[ -n "$done_at" ] || done_at=$SECONDS
 			fi
 		fi
-		if [ -n "$done_at" ] && [ $((SECONDS - done_at)) -ge 25 ]; then break; fi
+		if [ -n "$done_at" ] && [ $((SECONDS - done_at)) -ge "$dwell" ]; then break; fi
 		sleep 0.5
 	done
 	printf '%s' "$text"
@@ -290,14 +260,7 @@ await_dir() { # await_dir <path>
 
 # ---------------------------------------------------------------- preflight
 
-if [ "${HERDR_ENV:-}" != "1" ]; then
-	echo "not running inside a herdr pane (HERDR_ENV != 1)" >&2
-	exit 2
-fi
-[ -f "$EXTENSION" ] || {
-	echo "missing extension entry: $EXTENSION" >&2
-	exit 2
-}
+fleet_preflight
 [ -n "${OPENCODE_API_KEY:-}" ] || printf 'warning: no OPENCODE_API_KEY; the forked sessions will have no provider\n' >&2
 
 # ---------------------------------------------------------------- 1. repository
@@ -338,23 +301,18 @@ ok "scratch repository at $REPO (base $BASE, head $HEAD)"
 # ---------------------------------------------------------------- 2. observer
 
 say "2. observer pane (Pi + this extension)"
-OBSERVER_WS="$(herdr workspace create --cwd "$REPO" --label "fleet-fork-accept-$$" --no-focus 2>/dev/null |
-	python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["workspace"]["workspace_id"])')"
-OBSERVER="$(pane_in_workspace "$OBSERVER_WS")"
+if ! new_workspace "$REPO" "fleet-fork-accept-$$"; then
+	fail "could not open an observer workspace"
+	exit 1
+fi
+OBSERVER_WS="$FLEET_NEW_WORKSPACE"
+OBSERVER="$FLEET_NEW_PANE"
 if [ -z "$OBSERVER" ]; then
 	fail "could not open an observer workspace"
 	exit 1
 fi
 printf '   observer: %s (%s)\n' "$OBSERVER" "$OBSERVER_WS"
-herdr agent start "fleet-fork-accept-$$" --kind pi --pane "$OBSERVER" --timeout 60000 \
-	-- -ne -e "$EXTENSION" --session "$OBSERVER_SESSION" >/dev/null 2>&1
-if [ $? -eq 0 ]; then
-	ok "observer Pi started with the extension"
-else
-	fail "observer Pi did not start"
-	exit 1
-fi
-sleep 3
+start_observer "observer Pi started with the extension" "fleet-fork-accept-$$" "$OBSERVER" --session "$OBSERVER_SESSION" || exit 1
 
 # ---------------------------------------------------------------- 3. full fork
 
@@ -365,6 +323,7 @@ fork "$BRANCH" "$TASK" --base HEAD
 TOASTS="$(await_fork "$BRANCH" yes)"
 FULL_PATH="$(worktree_field "$BRANCH" path)"
 FULL_WS="$(worktree_field "$BRANCH" open_workspace_id)"
+register_worktree "$FULL_WS" "$FULL_PATH"
 if [ -z "$FULL_PATH" ]; then
 	fail "the fork did not open a worktree"
 	printf '%s\n' "$TOASTS" | tail -20
@@ -405,7 +364,7 @@ if [ -n "$SEEDED" ]; then
 	ok "the seed reached the forked session as a message"
 else
 	fail "the seed never reached the forked session ($SESSION_FILE)"
-	herdr pane read "$FULL_PANE" --source visible --lines 30 2>/dev/null | tail -20
+	dump_pane "$FULL_PANE" 20
 fi
 
 # And the session is working, not just seeded: the task asks for a commit. Wait
@@ -424,8 +383,10 @@ check "the work is committed on the fork's branch" 'fork-marker' "$(git -C "$FUL
 say "4. fork --base <commit without a lockfile>: no install"
 BRANCH="$PREFIX/nolock"
 fork "$BRANCH" "Reply with the single word NOLOCK and do nothing else." --base "$BASE"
-await_fork "$BRANCH" yes >/dev/null
+await_fork "$BRANCH" yes "" 0 >/dev/null
 NOLOCK_PATH="$(worktree_field "$BRANCH" path)"
+NOLOCK_WS="$(worktree_field "$BRANCH" open_workspace_id)"
+register_worktree "$NOLOCK_WS" "$NOLOCK_PATH"
 if [ -n "$NOLOCK_PATH" ]; then
 	ok "worktree opened on $BRANCH at $NOLOCK_PATH"
 else
@@ -437,7 +398,7 @@ if [ -d "$NOLOCK_PATH/node_modules" ]; then
 else
 	ok "no lockfile means no install"
 fi
-NOLOCK_PANE="$(pane_in_workspace "$(worktree_field "$BRANCH" open_workspace_id)" pi)"
+NOLOCK_PANE="$(pane_in_workspace "$NOLOCK_WS" pi)"
 [ -n "$NOLOCK_PANE" ] && ok "the pane and the agent were still created" || fail "no pane in the fork's workspace"
 
 # ---------------------------------------------------------------- 5. --no-install
@@ -445,8 +406,9 @@ NOLOCK_PANE="$(pane_in_workspace "$(worktree_field "$BRANCH" open_workspace_id)"
 say "5. fork --no-install: the lockfile is ignored on request"
 BRANCH="$PREFIX/noinstall"
 fork "$BRANCH" "Reply with the single word NOINSTALL and do nothing else." --base HEAD --no-install
-await_fork "$BRANCH" yes >/dev/null
+await_fork "$BRANCH" yes "" 0 >/dev/null
 NOINSTALL_PATH="$(worktree_field "$BRANCH" path)"
+register_worktree "$(worktree_field "$BRANCH" open_workspace_id)" "$NOINSTALL_PATH"
 if [ -n "$NOINSTALL_PATH" ]; then
 	ok "worktree opened on $BRANCH at $NOINSTALL_PATH"
 else
@@ -464,9 +426,10 @@ fi
 say "6. fork --no-start: worktree only"
 BRANCH="$PREFIX/nostart"
 fork "$BRANCH" "This task is never sent." --base HEAD --no-start
-await_fork "$BRANCH" no >/dev/null
+await_fork "$BRANCH" no "" 0 >/dev/null
 NOSTART_PATH="$(worktree_field "$BRANCH" path)"
 NOSTART_WS="$(worktree_field "$BRANCH" open_workspace_id)"
+register_worktree "$NOSTART_WS" "$NOSTART_PATH"
 if [ -n "$NOSTART_PATH" ]; then
 	ok "worktree opened on $BRANCH at $NOSTART_PATH"
 else
@@ -496,25 +459,31 @@ ask() { # ask <prompt>
 	herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1
 }
 ask "Call the fleet_fork tool exactly once with branch \"$BRANCH\" and task \"$TOOL_TASK\" Then stop."
-await_fork "$BRANCH" yes >/dev/null
+await_fork "$BRANCH" yes "" 0 >/dev/null
 TOOL_PATH="$(worktree_field "$BRANCH" path)"
 TOOL_WS="$(worktree_field "$BRANCH" open_workspace_id)"
+register_worktree "$TOOL_WS" "$TOOL_PATH"
 if [ -n "$TOOL_PATH" ]; then
 	ok "the tool created a worktree ($TOOL_PATH)"
 else
 	fail "the agent's fleet_fork call created no worktree"
-	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+	dump_pane "$OBSERVER" 20
 fi
 TOOL_PANE="$(pane_in_workspace "$TOOL_WS" pi)"
 [ -n "$TOOL_PANE" ] && ok "the tool started a Pi session in it ($TOOL_PANE)" || fail "no Pi agent from the tool path"
 
 # The tool result is a conversation entry, so the observer's own session is where
 # to see that the call happened and what it returned.
+#
+# The forked pane's session path is re-read every turn: the pane exists as soon
+# as `pane.split` returns, but herdr only reports the agent's session once Pi has
+# started in it, so a path read once can still be empty.
 TOOL_SEEN=""
-SESSION_FILE="$(pane_session "$TOOL_PANE")"
 SEEDED=""
+SESSION_FILE=""
 deadline=$((SECONDS + 300))
 while [ "$SECONDS" -lt "$deadline" ]; do
+	[ -n "$TOOL_PANE" ] && SESSION_FILE="$(pane_session "$TOOL_PANE")"
 	if grep -q "forked $BRANCH" "$OBSERVER_SESSION" 2>/dev/null; then TOOL_SEEN="yes"; fi
 	if [ -n "$SESSION_FILE" ] && grep -q "TOOLMARKER" "$SESSION_FILE" 2>/dev/null; then SEEDED="yes"; fi
 	[ -n "$TOOL_SEEN" ] && [ -n "$SEEDED" ] && break
@@ -550,7 +519,7 @@ if [ -n "$REFUSED" ]; then
 	ok "the tool refused an empty task"
 else
 	fail "the empty call was not refused"
-	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+	dump_pane "$OBSERVER" 20
 fi
 if [ -z "$(worktree_field "$BRANCH" path)" ]; then
 	ok "the refused call created no worktree"
@@ -618,7 +587,7 @@ if [ -n "$REVIEW_PANE" ]; then
 	ok "the reviewer runs in the author's worktree ($REVIEW_PANE, agent $REVIEW_AGENT)"
 else
 	fail "no reviewer pane appeared in $FULL_WS"
-	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+	dump_pane "$OBSERVER" 20
 fi
 
 # The seed is the evidence: it has to arrive as a message, and it has to carry
@@ -687,6 +656,7 @@ deadline=$((SECONDS + 180))
 while [ "$SECONDS" -lt "$deadline" ] && [ -z "$(worktree_field "$OUTER_BRANCH" path)" ]; do sleep 1; done
 OUTER_PATH="$(worktree_field "$OUTER_BRANCH" path)"
 OUTER_WS="$(worktree_field "$OUTER_BRANCH" open_workspace_id)"
+register_worktree "$OUTER_WS" "$OUTER_PATH"
 if [ -n "$OUTER_PATH" ]; then
 	ok "linked worktree opened on $OUTER_BRANCH at $OUTER_PATH"
 else
@@ -703,14 +673,7 @@ ok "the linked worktree is at its own commit ($OUTER_HEAD), with an uncommitted 
 
 OUTER_OBSERVER="$(pane_in_workspace "$OUTER_WS")"
 OUTER_SESSION="$SCRATCH/outer-observer.jsonl"
-herdr agent start "fleet-outer-$$" --kind pi --pane "$OUTER_OBSERVER" --timeout 60000 \
-	-- -ne -e "$EXTENSION" --session "$OUTER_SESSION" >/dev/null 2>&1
-if [ $? -eq 0 ]; then
-	ok "observer Pi started inside the linked worktree"
-else
-	fail "observer Pi did not start in the linked worktree"
-fi
-sleep 3
+start_observer "observer Pi started inside the linked worktree" "fleet-outer-$$" "$OUTER_OBSERVER" --session "$OUTER_SESSION"
 
 INNER_BRANCH="$PREFIX/inner"
 INNER_TASK="Reply with the single word LINKED and do nothing else."
@@ -719,11 +682,13 @@ sleep 0.7
 herdr pane send-keys "$OUTER_OBSERVER" enter >/dev/null 2>&1
 INNER_TOASTS="$(await_fork "$INNER_BRANCH" yes "$OUTER_OBSERVER")"
 INNER_PATH="$(worktree_field "$INNER_BRANCH" path)"
+INNER_WS="$(worktree_field "$INNER_BRANCH" open_workspace_id)"
+register_worktree "$INNER_WS" "$INNER_PATH"
 if [ -n "$INNER_PATH" ]; then
 	ok "the fork from a linked worktree opened a worktree ($INNER_PATH)"
 else
 	fail "the fork from a linked worktree created no worktree"
-	herdr pane read "$OUTER_OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+	dump_pane "$OUTER_OBSERVER" 20
 fi
 
 # The fork point is the caller's own commit, which exists nowhere else. The log
@@ -738,7 +703,7 @@ fi
 check "the uncommitted change was not carried in" '^outer$' "$(cat "$INNER_PATH/outer-marker.txt" 2>/dev/null)"
 check "the fork says it was created from the main checkout" 'created from the main checkout at' "$INNER_TOASTS"
 check "the fork says the uncommitted change stays behind" 'uncommitted changes' "$INNER_TOASTS"
-INNER_PANE="$(pane_in_workspace "$(worktree_field "$INNER_BRANCH" open_workspace_id)" pi)"
+INNER_PANE="$(pane_in_workspace "$INNER_WS" pi)"
 [ -n "$INNER_PANE" ] && ok "the fork started a Pi session as usual ($INNER_PANE)" || fail "no Pi agent in the inner fork's workspace"
 
 # ---------------------------------------------------------------- 11. verdict and merge gate
@@ -751,9 +716,10 @@ say "11. run record, /fleet status, and the gate before any verdict"
 GATE_BRANCH="$PREFIX/gate"
 GATE_TASK="Create a file named gate-marker.txt containing the word GATE, then commit it."
 fork "$GATE_BRANCH" "$GATE_TASK" --base HEAD
-await_fork "$GATE_BRANCH" yes >/dev/null
+await_fork "$GATE_BRANCH" yes "" 0 >/dev/null
 GATE_PATH="$(worktree_field "$GATE_BRANCH" path)"
 GATE_WS="$(worktree_field "$GATE_BRANCH" open_workspace_id)"
+register_worktree "$GATE_WS" "$GATE_PATH"
 GATE_PANE="$(pane_in_workspace "$GATE_WS" pi)"
 if [ -n "$GATE_PATH" ] && [ -n "$GATE_PANE" ]; then
 	ok "the gate branch was forked ($GATE_PATH, pane $GATE_PANE)"
@@ -788,7 +754,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
 	sleep 1
 done
 check "status lists the run with its scope" "$GATE_BRANCH · implementation · (作業中|working)" "$STATUS_TEXT"
-printf '   observed: %s\n' "$(printf '%s' "$STATUS_TEXT" | grep -ao "$GATE_BRANCH · implementation · [^\n]*" | tail -1 | cut -c1-200)"
+observed "status line" "$GATE_BRANCH · implementation · .*" "$STATUS_TEXT"
 
 # The gate has to refuse while no verdict exists, and git must not run.
 merge() { herdr pane send-text "$OBSERVER" "/fleet merge $1 $2" >/dev/null 2>&1; sleep 0.7; herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1; }
@@ -801,7 +767,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
 	sleep 1
 done
 check "the gate refuses a branch with no approve" 'no approve verdict' "$REFUSED_TEXT"
-printf '   observed: %s\n' "$(printf '%s' "$REFUSED_TEXT" | grep -ao 'merge: .*no approve verdict[^\n]*' | tail -1 | cut -c1-200)"
+observed "gate refusal" 'merge: .*no approve verdict.*' "$REFUSED_TEXT"
 if git -C "$REPO" log --oneline 2>/dev/null | grep -q 'gate-marker'; then
 	fail "the refused merge still merged"
 else
@@ -826,7 +792,7 @@ if [ -n "$GATE_REVIEW_PANE" ]; then
 	ok "the review started, and the run recorded its reviewer ($GATE_REVIEW_PANE)"
 else
 	fail "the review recorded no reviewer pane"
-	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+	dump_pane "$OBSERVER" 20
 fi
 REVIEW_AGENT="$(run_field "$GATE_BRANCH" reviewer.agentName)"
 [ -n "$REVIEW_AGENT" ] && ok "the record names the reviewer's agent ($REVIEW_AGENT)" || fail "the record has no reviewer agent"
@@ -844,7 +810,7 @@ if [ -n "$VERDICT" ]; then
 	ok "the reviewer recorded a verdict with fleet_verdict ($VERDICT)"
 else
 	fail "the reviewer never called fleet_verdict"
-	herdr pane read "$GATE_REVIEW_PANE" --source visible --lines 30 2>/dev/null | tail -20
+	dump_pane "$GATE_REVIEW_PANE" 20
 fi
 
 # The extension is loaded in every session, so the pane check is what keeps a
@@ -860,7 +826,7 @@ if [ -n "$STRANGER" ]; then
 	ok "a pane that is not the reviewer is refused a verdict"
 else
 	fail "the observer was allowed to write a verdict"
-	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+	dump_pane "$OBSERVER" 20
 fi
 
 # ---------------------------------------------------------------- 13. the gate opens
@@ -887,7 +853,7 @@ if [ "$VERDICT" = "approve" ]; then
 		sleep 1
 	done
 	check "the merge runs with the reviewer gone" "merge $GATE_BRANCH 完了|Merged $GATE_BRANCH" "$MERGED_TEXT"
-	printf '   observed: %s\n' "$(printf '%s' "$MERGED_TEXT" | grep -ao "merge $GATE_BRANCH 完了[^\n]*\|Merged $GATE_BRANCH[^\n]*" | tail -1 | cut -c1-200)"
+	observed "merge result" "merge $GATE_BRANCH 完了.*|Merged $GATE_BRANCH.*" "$MERGED_TEXT"
 	check "main now carries the merged work" 'GATE' "$(cat "$REPO/gate-marker.txt" 2>/dev/null)"
 
 	status
@@ -899,7 +865,7 @@ if [ "$VERDICT" = "approve" ]; then
 		sleep 1
 	done
 	check "status shows the run as merged" 'マージ済み|merged' "$STATUS_AFTER"
-	printf '   observed: %s\n' "$(printf '%s' "$STATUS_AFTER" | grep -ao "$GATE_BRANCH · implementation · [^\n]*" | tail -1 | cut -c1-200)"
+	observed "status line" "$GATE_BRANCH · implementation · .*" "$STATUS_AFTER"
 else
 	fail "the reviewer did not approve (verdict: ${VERDICT:-none}), so the gate could not be shown to open"
 fi
@@ -928,7 +894,7 @@ if [ -n "$TOOL_REVIEW_PANE" ]; then
 	ok "the fleet_review tool started a reviewer in the author's worktree ($TOOL_REVIEW_PANE)"
 else
 	fail "the fleet_review tool started no reviewer"
-	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+	dump_pane "$OBSERVER" 20
 fi
 check "the tool result reached the observer's conversation" "reviewing $TOOL_REVIEW_BRANCH" "$(grep -a "reviewing $TOOL_REVIEW_BRANCH" "$OBSERVER_SESSION" 2>/dev/null | tail -1)"
 TOOL_REVIEW_AGENT="$(run_field "$TOOL_REVIEW_BRANCH" reviewer.agentName)"
@@ -936,5 +902,4 @@ TOOL_REVIEW_AGENT="$(run_field "$TOOL_REVIEW_BRANCH" reviewer.agentName)"
 
 # ---------------------------------------------------------------- result
 
-printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
-[ "$FAIL" -eq 0 ]
+fleet_result

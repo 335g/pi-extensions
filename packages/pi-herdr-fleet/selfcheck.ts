@@ -107,6 +107,25 @@ const openSubscriptions = new Set<net.Socket>();
 let refuseNextSubscribe = false;
 /** What `pane.wait_for_output` reports as the pane's snapshot. */
 let waitText = "";
+/**
+ * The subscription types herdr accepts, and the ones that carry a `pane_id`.
+ *
+ * A fake that accepts anything is friendlier than herdr: a typo in the set the
+ * broker builds (`pane.create` for `pane.created`) would be silently accepted
+ * here and refused by the real server, so the whole subscription would be
+ * refused in the field and nowhere in this file.
+ */
+const SUBSCRIPTION_TYPES = new Set(
+	[
+		"workspace.created workspace.updated workspace.metadata_updated workspace.renamed workspace.moved workspace.reordered",
+		"workspace.closed workspace.focused worktree.created worktree.opened worktree.removed",
+		"tab.created tab.closed tab.focused tab.renamed tab.moved",
+		"pane.created pane.closed pane.updated pane.focused pane.moved pane.exited pane.agent_detected",
+		"pane.output_matched pane.agent_status_changed pane.scroll_changed layout.updated",
+	].flatMap((group) => group.split(" ")),
+);
+/** `pane.agent_status_changed` without a `pane_id` is `invalid_request`, measured. */
+const PANE_SCOPED_TYPES = new Set(["pane.output_matched", "pane.agent_status_changed", "pane.scroll_changed"]);
 /** `agent.start` failures, consumed one per call; empty means it succeeds. */
 let startFaults: { code: string; message: string }[] = [];
 /** What `worktree.list` reports. Set per test; empty means "no worktrees". */
@@ -142,7 +161,19 @@ const server = net.createServer((socket) => {
 				case "boom":
 					reply({ error: { code: "pane_not_found", message: "pane w9:p9 not found" } });
 					break;
-				case "events.subscribe":
+				case "events.subscribe": {
+					// herdr deserializes the set before it looks anything up, so an
+					// unknown type is refused here too.
+					const set: { type: string; pane_id?: string }[] = request.params.subscriptions;
+					const invalid = set.find(
+						(subscription) =>
+							!SUBSCRIPTION_TYPES.has(subscription.type) ||
+							(PANE_SCOPED_TYPES.has(subscription.type) && typeof subscription.pane_id !== "string"),
+					);
+					if (invalid) {
+						reply({ error: { code: "invalid_request", message: `invalid request: unknown variant \`${invalid.type}\`` } });
+						break;
+					}
 					if (refuseNextSubscribe) {
 						refuseNextSubscribe = false;
 						reply({ error: { code: "pane_not_found", message: "pane w1:p2 not found" } });
@@ -151,6 +182,7 @@ const server = net.createServer((socket) => {
 					openSubscriptions.add(socket);
 					reply({ result: { type: "subscription_started" } });
 					break;
+				}
 				case "layout.export":
 					reply({
 						result: {
@@ -190,24 +222,38 @@ const server = net.createServer((socket) => {
 					break;
 				case "agent.start": {
 					const fault = startFaults.shift();
-					if (fault) reply({ error: fault });
-					else reply({ result: { type: "agent_started", agent: { pane_id: request.params.pane_id, name: request.params.name, agent: "pi", agent_status: "unknown" } } });
+					if (fault) {
+						reply({ error: fault });
+						break;
+					}
+					// `agent_started` carries the argv it launched; the fake sends one too.
+					reply({
+						result: {
+							type: "agent_started",
+							agent: { pane_id: request.params.pane_id, name: request.params.name, agent: "pi", agent_status: "unknown" },
+							argv: [],
+						},
+					});
 					break;
 				}
 				case "agent.wait":
-					reply({ result: { type: "agent_settled", agent: { pane_id: request.params.target, agent_status: "idle" } } });
+					// `agent_info`, as herdr answers it. An invented `agent_settled` would
+					// let a caller branch on a type the real server never sends.
+					reply({ result: { type: "agent_info", agent: { pane_id: request.params.target, agent_status: "idle" } } });
 					break;
+				case "silent":
+					break; // never answers, so the timeout path is reachable
 				default:
-					break; // "silent": never answers, so the timeout path is reachable
+					reply({ error: { code: "invalid_request", message: `invalid request: unknown variant \`${request.method}\`` } });
 			}
 		}
 	});
 });
 
-/** Push one event line to every open subscription. */
+/** Push one event line to every open subscription. The envelope is `{event, data}`. */
 function push(event: string, data: unknown): void {
 	for (const socket of openSubscriptions) {
-		socket.write(`${JSON.stringify({ id: "push", event, data })}\n`);
+		socket.write(`${JSON.stringify({ event, data })}\n`);
 	}
 }
 
@@ -649,47 +695,13 @@ try {
 	}
 	assert(received.length === 0, `a refused request must not reach herdr: ${JSON.stringify(received.map((call) => call.method))}`);
 
-	// The tool path reaches the same herdr calls as the command, because both go
-	// through forkWorktree.
-	direnv(0);
-	received.length = 0;
-	startFaults = [];
-	waitText = "FLEET_INSTALL_1=0\n";
-	writeFileSync(join(scratch, "checkout", "package-lock.json"), "{}");
-	// The fork writes its run record into the main checkout, so this one answers
-	// git as well as direnv. Everything else about the call is unchanged.
-	const direnvAnswer = answer;
-	answer = (command, args) => {
-		if (command !== "git") return direnvAnswer(command, args);
-		const git: CommandResult = { stdout: "", stderr: "", code: 0, killed: false };
-		if (args[0] === "worktree") return { ...git, stdout: `worktree ${dirs.source}\n\n` };
-		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { ...git, stdout: `${dirs.source}\n` };
-		if (args[0] === "rev-parse") return { ...git, stdout: `${"a".repeat(40)}\n` };
-		return git;
-	};
-	const forked = await tool.execute(
-		"call-1",
-		{ branch: "feat/tool", task: "TOOL-MARKER" },
-		undefined,
-		undefined,
-		{ mode: "tui", cwd: dirs.source } as never,
-	);
-	const report = (forked.content[0] as { text: string }).text;
-	assert(report.includes("forked feat/tool") && report.includes("agent: feat-tool"), `the tool result must name the fork: ${report}`);
-	assert(report.includes(join(scratch, "checkout")), `the tool result must name the worktree: ${report}`);
-	assert(!report.includes("warning:") && !report.includes("copied"), `a clean fork says nothing about the environment: ${report}`);
-	assert(
-		received.some((call) => call.method === "worktree.create" && call.params.branch === "feat/tool") &&
-			received.some((call) => call.method === "pane.send_input" && call.params.text.includes("TOOL-MARKER")),
-		"the tool must create the worktree and send the seed",
-	);
-	assert((forked.details as { install?: { command: string } }).install?.command === "npm install", "the install is reported to the model");
-
-	// An environment warning is the one thing about the environment the result
-	// carries, because it is the one thing the caller may have to act on.
+	// The tool's own result — the worktree, the pane, the seed, the conversation
+	// entry — is asserted end to end by `acceptance-fork.sh` §7. What is left for
+	// the fake is the environment warning, which that run cannot stage: every
+	// command fails here, so neither the environment nor the run record can be
+	// written and both come back as warnings.
 	rmSync(join(scratch, "checkout"), { recursive: true, force: true });
 	mkdirSync(join(scratch, "checkout"), { recursive: true });
-	writeFileSync(join(scratch, "checkout", "package-lock.json"), "{}");
 	answer = () => ({ stdout: "", stderr: "nope", code: 1, killed: false });
 	const warned = await tool.execute(
 		"call-2",
@@ -727,26 +739,11 @@ try {
 	// `worktree.create` refuses a linked worktree as its source, so the call is
 	// redirected to the main checkout with the caller's own HEAD pinned as base —
 	// without the pin the fork point would silently move to the main checkout.
+	// The linked case itself is asserted end to end by `acceptance-fork.sh` §10;
+	// what is left here is that the main checkout is passed through unchanged.
 	const mainPath = mkdtempSync(join(scratch, "main-"));
-	const linkedPath = mkdtempSync(join(scratch, "linked-"));
 	const pinned = "a".repeat(40);
-	answer = gitAnswer({
-		"worktree list --porcelain": `worktree ${mainPath}\nHEAD ${pinned}\nbranch refs/heads/main\n\nworktree ${linkedPath}\nHEAD ${pinned}\nbranch refs/heads/feat/outer\n\n`,
-		"rev-parse --show-toplevel": `${linkedPath}\n`,
-		"rev-parse": `${pinned}\n`,
-		status: " M file.txt\n",
-	});
-	received.length = 0;
-	const relocated = unwrap(
-		await createWorktree(client, run, { cwd: linkedPath, branch: "feat/inner" }),
-		"createWorktree from a linked worktree",
-	);
-	const relocatedCall = received.filter((call) => call.method === "worktree.create").at(-1)!;
-	assert(relocatedCall.params.cwd === mainPath, `the source must be the main checkout: ${JSON.stringify(relocatedCall.params)}`);
-	assert(relocatedCall.params.base === pinned, `the caller's HEAD must be pinned: ${JSON.stringify(relocatedCall.params)}`);
-	assert(relocated.warnings.length === 2, `the detour and the uncommitted changes must be reported: ${JSON.stringify(relocated.warnings)}`);
 
-	// From the main checkout nothing is redirected, and an explicit base is kept.
 	mkdirSync(join(scratch, "checkout"), { recursive: true });
 	answer = gitAnswer({
 		"worktree list --porcelain": `worktree ${mainPath}\nHEAD ${pinned}\nbranch refs/heads/main\n\n`,
@@ -819,22 +816,14 @@ try {
 	assert(reviewed.path === "/repo/wt" && reviewed.workspaceId === "w1", `the review runs in the author's worktree: ${JSON.stringify(reviewed)}`);
 	assert(reviewed.authorPaneId === "w1:p7" && reviewed.authorSession === sessionPath, `the author is found by its agent name: ${JSON.stringify(reviewed)}`);
 	assert(reviewed.base === "cafe" && reviewed.diffChars === "DIFF-MARKER\n".length, `the diff is taken against the main checkout's HEAD: ${JSON.stringify(reviewed)}`);
-	const reviewSplit = received.find((call) => call.method === "pane.split")!;
-	assert(
-		reviewSplit.params.cwd === "/repo/wt" && reviewSplit.params.workspace_id === "w1" && reviewSplit.params.target_pane_id === "w1:p7",
-		`the review pane must land in the author's worktree: ${JSON.stringify(reviewSplit.params)}`,
-	);
 	const reviewStart = received.filter((call) => call.method === "agent.start").at(-1)!;
 	assert(reviewStart.params.name === "feat-review-review", `the reviewer needs its own agent name: ${JSON.stringify(reviewStart.params)}`);
 	assert(
 		reviewStart.params.args?.[0] === "-e" && String(reviewStart.params.args?.[1]).endsWith("index.ts"),
 		`the reviewer must load this extension by path, so fleet_verdict exists even when it is not installed: ${JSON.stringify(reviewStart.params.args)}`,
 	);
-	const reviewSeed = received.filter((call) => call.method === "pane.send_input").at(-1)!.params.text as string;
-	for (const material of ["TASK-MARKER", "DIFF-MARKER", "THIRD", "/repo/wt", "fleet_verdict"]) {
-		assert(reviewSeed.includes(material), `the seed must carry the review material (${material}): ${reviewSeed.slice(0, 400)}`);
-	}
-	assert(!reviewSeed.includes("SEED-MARKER"), "the author's seed is not the author's report");
+	// What the reviewer was given, and where its pane landed, is asserted end to
+	// end by `acceptance-fork.sh` §9, which reads the reviewer's own session.
 
 	// Nothing is started for a request that cannot be reviewed.
 	worktreeList = [];
@@ -933,22 +922,8 @@ try {
 	const verdictPi = { appendEntry: (type: string, data: unknown) => entries.push({ type, data }) } as never;
 	const verdictTool = fleetVerdictTool(client, run, verdictPi);
 
-	// The extension runs in every session, so the pane check is what keeps a
-	// verdict to the reviewer the run recorded.
-	const strangerMain = mkdtempSync(join(scratch, "verdict-stranger-"));
-	answer = gitAnswer({ "worktree list --porcelain": `worktree ${strangerMain}\n\n` });
-	writeRun(strangerMain, { ...record, branch: "feat/stranger", reviewer: { paneId: "w9:p9", agentName: "other" } });
-	const stranger = await (async () => {
-		try {
-			await verdictTool.execute("v1", { verdict: "approve", findings: [] }, undefined, undefined, { mode: "tui", cwd: strangerMain } as never);
-			return "";
-		} catch (error) {
-			return error instanceof Error ? error.message : String(error);
-		}
-	})();
-	assert(stranger.includes("not the reviewer"), `a non-reviewer pane must be refused: ${stranger}`);
-	assert(readRun(strangerMain, "feat/stranger")?.verdict === undefined, "a refused verdict must not be written");
-
+	// A pane that is not the reviewer is refused end to end by
+	// `acceptance-fork.sh` §12, where a real model calls the tool.
 	const reviewerMain = mkdtempSync(join(scratch, "verdict-reviewer-"));
 	answer = gitAnswer({ "worktree list --porcelain": `worktree ${reviewerMain}\n\n` });
 	writeRun(reviewerMain, {

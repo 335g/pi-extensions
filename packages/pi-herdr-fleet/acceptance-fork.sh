@@ -972,7 +972,7 @@ else
 	fail "the agent's fleet_status call returned no run list"
 	dump_pane "$OBSERVER" 20
 fi
-check "the tool's list carries branch, scope, state and verdict" "$TOOL_GATE_BRANCH · implementation · working · -" "$(grep -a "$TOOL_GATE_BRANCH" "$OBSERVER_SESSION" 2>/dev/null | tail -1)"
+check "the tool's list carries branch, scope, state and verdict" "$TOOL_GATE_BRANCH · implementation · working · -" "$(grep -aF "$TOOL_GATE_BRANCH · implementation · working · -" "$OBSERVER_SESSION" 2>/dev/null | tail -1)"
 
 # No approve: the tool must refuse, and git must not run.
 ask "Call the fleet_merge tool with branch \"$TOOL_GATE_BRANCH\". Report the exact error you get, and do not retry or use another tool."
@@ -1015,7 +1015,7 @@ else
 	dump_pane "$OBSERVER" 20
 fi
 check "main now carries the tool-merged work" 'TOOLGATE' "$(cat "$REPO/toolgate-marker.txt" 2>/dev/null)"
-check "the tool reports the surviving worktree" 'worktree was left in place' "$(grep -a "merged $TOOL_GATE_BRANCH" "$OBSERVER_SESSION" 2>/dev/null | tail -1)"
+check "the tool reports the surviving worktree" "merged $TOOL_GATE_BRANCH into .*worktree was left in place" "$(grep -aF "merged $TOOL_GATE_BRANCH into" "$OBSERVER_SESSION" 2>/dev/null | grep -aF 'worktree was left in place' | tail -1)"
 if git -C "$REPO" worktree list --porcelain 2>/dev/null | grep -qF "worktree $GATE_PATH"; then
 	ok "the worktree survived the merge"
 else

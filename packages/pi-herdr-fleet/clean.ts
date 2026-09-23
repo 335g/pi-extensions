@@ -116,7 +116,16 @@ export async function cleanRun(
 			timeout: GIT_TIMEOUT_MS,
 		});
 		if (deleted.code !== 0) {
-			return err(`clean: git branch ${request.force === true ? "-D" : "-d"} ${branch} failed: ${firstLine(deleted.stderr) ?? `exit ${deleted.code}`}`);
+			const reason = firstLine(deleted.stderr) ?? `exit ${deleted.code}`;
+			// The branch delete is often the first step that can fail after the worktree
+			// is gone, and the reason is usually a warning collected above: a worktree
+			// herdr could not remove still has the branch checked out, and git's own
+			// message then points at git rather than at herdr. The warnings carry the
+			// root cause, so they go into the error instead of being dropped.
+			const context = warnings.length === 0 ? "" : `; before it: ${warnings.join("; ")}`;
+			return err(
+				`clean: git branch ${request.force === true ? "-D" : "-d"} ${branch} failed: ${reason}${context}`,
+			);
 		}
 		branchDeleted = true;
 	}

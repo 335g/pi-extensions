@@ -364,10 +364,10 @@ export function fleetStatusTool(run: CommandRunner): ToolDefinition<typeof STATU
 		name: "fleet_status",
 		label: "Fleet status",
 		description:
-			"List every recorded fleet run, one per branch that fleet_fork created, with its branch, scope, state and verdict. A state is working, unreviewed, approve, request-changes, or merged when the branch is already in the main checkout's history. Read-only, and takes no arguments.",
+			"List every recorded fleet run, one per branch that fleet_fork created, with its branch, scope, state and verdict. A state is working, unreviewed, approve, request-changes, merged when the branch is already in the main checkout's history, or cleaned once fleet_clean has removed its worktree, branch and panes. Read-only, and takes no arguments.",
 		promptSnippet: "List every recorded run with its branch, scope, state and verdict",
 		promptGuidelines: [
-			"Call fleet_status to see which branches are still working, waiting on a review, approved or already merged.",
+			"Call fleet_status to see which branches are still working, waiting on a review, approved, already merged, or already cleaned.",
 			"Only a run whose state is approve may be merged; fleet_merge refuses the rest unless force is set.",
 		],
 		parameters: STATUS_PARAMETERS,

@@ -1225,11 +1225,15 @@ try {
 	const cleanMain = mkdtempSync(join(scratch, "clean-main-"));
 	let cleanMerged = false;
 	let cleanBranchExists = true;
+	let branchDeleteFails = false;
 	answer = (command, args) => {
 		if (command !== "git") return { stdout: "", stderr: "", code: 0, killed: false };
 		if (args[0] === "worktree") return { stdout: `worktree ${cleanMain}\nHEAD abc\nbranch refs/heads/main\n\n`, stderr: "", code: 0, killed: false };
 		if (args[0] === "merge-base") return { stdout: "", stderr: "", code: cleanMerged ? 0 : 1, killed: false };
 		if (args[0] === "show-ref") return { stdout: "", stderr: "", code: cleanBranchExists ? 0 : 1, killed: false };
+		if (args[0] === "branch" && branchDeleteFails) {
+			return { stdout: "", stderr: "error: Cannot delete branch 'x' checked out at '/wt'", code: 1, killed: false };
+		}
 		return { stdout: "", stderr: "", code: 0, killed: false };
 	};
 	const cleanRecord: RunRecord = {
@@ -1289,6 +1293,21 @@ try {
 	const byGit = unwrap(await cleanRun(client, run, { cwd: cleanMain, branch: "feat/clean-git" }), "git-merged cleanRun");
 	assert(byGit.branchDeleted, `an ancestor branch is cleanable without force: ${JSON.stringify(byGit)}`);
 	assert(runs.filter((call) => call.command === "git" && call.args[0] === "branch").at(-1)!.args.join(" ") === "branch -d feat/clean-git", "without force the branch goes with -d");
+
+	// The branch delete is where an incomplete cleanup surfaces: the worktree herdr
+	// could not remove still has the branch checked out. git's own message blames
+	// git, so the warnings collected before it have to travel in the error.
+	writeRun(cleanMain, { ...cleanRecord, branch: "feat/clean-fail" });
+	branchDeleteFails = true;
+	worktreeRemoveError = { code: "pane_not_found", message: "workspace w9 not found" };
+	const failed = await cleanRun(client, run, { cwd: cleanMain, branch: "feat/clean-fail" });
+	assert(
+		!failed.ok && failed.error.includes("was not removed") && failed.error.includes("Cannot delete branch"),
+		`a branch-delete failure must carry the earlier warnings: ${JSON.stringify(failed)}`,
+	);
+	assert(readRun(cleanMain, "feat/clean-fail")?.cleanedAt === undefined, "an incomplete clean must not record cleanedAt");
+	branchDeleteFails = false;
+	worktreeRemoveError = undefined;
 
 	// The tool is the path an agent drives; the schema carries the shape.
 	const cleanTool = fleetCleanTool(client, run);

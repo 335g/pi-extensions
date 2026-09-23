@@ -18,7 +18,11 @@ export type ReadSource = "visible" | "recent" | "recent_unwrapped" | "detection"
 /**
  * One entry of an `events.subscribe` request. `pane_id` is required by the
  * pane-scoped events (`pane.agent_status_changed`, `pane.scroll_changed`) and
- * rejected by the lifecycle events, so it is only ever set for the former.
+ * ignored by the lifecycle events, so it is only ever set for the former.
+ *
+ * Measured against herdr 0.9.0: a lifecycle event carrying a `pane_id` is
+ * accepted and the field does nothing. It is not rejected, so nothing may rely
+ * on herdr refusing it.
  */
 export interface Subscription {
 	type: string;

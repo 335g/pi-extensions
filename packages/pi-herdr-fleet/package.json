@@ -20,6 +20,7 @@
     "index.ts",
     "herdr-client.ts",
     "approvals.ts",
+    "audit.ts",
     "recipes.ts",
     "worktree.ts",
     "scopes.ts",

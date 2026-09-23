@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 import { ApprovalBroker, FleetOverlay, strings } from "./approvals.ts";
+import { AuditLog, AUDIT_CUSTOM_TYPE, describe, registerAuditRenderer } from "./audit.ts";
 import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient, type Outcome, type SubscribeEvent } from "./herdr-client.ts";
 import { tokenize } from "./index.ts";
@@ -105,6 +106,11 @@ const received: { method: string; params: any }[] = [];
 const openSubscriptions = new Set<net.Socket>();
 /** Set to have the next `events.subscribe` refused, the way herdr refuses a vanished pane. */
 let refuseNextSubscribe = false;
+/**
+ * Set to have every `events.subscribe` refused: an older herdr that does not
+ * know one of the types refuses the set every time, not once.
+ */
+let refuseAllSubscribes = false;
 /** What `pane.wait_for_output` reports as the pane's snapshot. */
 let waitText = "";
 /**
@@ -174,7 +180,7 @@ const server = net.createServer((socket) => {
 						reply({ error: { code: "invalid_request", message: `invalid request: unknown variant \`${invalid.type}\`` } });
 						break;
 					}
-					if (refuseNextSubscribe) {
+					if (refuseAllSubscribes || refuseNextSubscribe) {
 						refuseNextSubscribe = false;
 						reply({ error: { code: "pane_not_found", message: "pane w1:p2 not found" } });
 						break;
@@ -325,7 +331,9 @@ try {
 	// ------------------------------------------------------------ broker
 
 	const notified: string[] = [];
-	const broker = new ApprovalBroker(client, (entry) => notified.push(entry.pane_id));
+	const auditEntries: { type: string; data: ReturnType<typeof describe> }[] = [];
+	const audit = new AuditLog((type, data) => auditEntries.push({ type, data }), "w1:p1");
+	const broker = new ApprovalBroker(client, (entry) => notified.push(entry.pane_id), (event) => audit.record(event));
 	const byId = () => broker.entries().map((entry) => entry.pane_id).join();
 
 	/** Move herdr's own state and emit the event, the way the server does. */
@@ -385,6 +393,108 @@ try {
 	status("w1:p6", "blocked");
 	await settle();
 	assert(broker.entries().some((entry) => entry.pane_id === "w1:p6"), `a refused set must be rebuilt: ${byId()}`);
+
+	// ------------------------------------------------------------ audit log
+
+	// `describe` is the whole decision of what is worth keeping, so it is checked
+	// against herdr's own event names and payloads before it is checked through
+	// the broker. Both spellings are here: the pane-scoped subscriptions push the
+	// dotted name, the lifecycle events push the schema's underscored kind.
+	const worktreeCreated = describe({
+		event: "worktree_created",
+		data: { worktree: { branch: "feat/x", path: "/repo/wt" }, workspace: { workspace_id: "w9" } },
+	});
+	assert(worktreeCreated?.summary === "worktree created feat/x", `a worktree carries its branch: ${JSON.stringify(worktreeCreated)}`);
+	assert(worktreeCreated?.branch === "feat/x" && worktreeCreated?.workspace_id === "w9", "the branch and the workspace are searchable on their own");
+	const worktreeRemoved = describe({ event: "worktree_removed", data: { workspace_id: "w9", worktree: { branch: "feat/x" }, forced: true } });
+	assert(worktreeRemoved?.summary === "worktree removed feat/x (forced)", `a forced removal says so: ${JSON.stringify(worktreeRemoved)}`);
+	assert(describe({ event: "worktree_removed", data: { worktree: { branch: "feat/x" }, forced: false } })?.forced === false, "an unforced removal is not marked");
+	const workspaceCreated = describe({ event: "workspace_created", data: { workspace: { workspace_id: "w9", label: "feat-x" } } });
+	assert(workspaceCreated?.summary === "workspace created feat-x (w9)", `a workspace carries its label: ${JSON.stringify(workspaceCreated)}`);
+	assert(describe({ event: "workspace_closed", data: { workspace_id: "w9" } })?.summary === "workspace closed w9", "a closed workspace is named by its id");
+	const statusChanged = describe({
+		event: "pane.agent_status_changed",
+		data: { pane_id: "w6:p1", workspace_id: "w6", agent_status: "blocked", display_agent: "claude" },
+	});
+	assert(statusChanged?.summary === "w6:p1 blocked (claude)", `the dotted name is normalized, not missed: ${JSON.stringify(statusChanged)}`);
+	assert(
+		describe({ event: "pane_agent_status_changed", data: { pane_id: "w6:p1", agent_status: "blocked" } })?.event === "pane_agent_status_changed",
+		"the underscored spelling describes the same event",
+	);
+	assert(describe({ event: "pane.agent_status_changed", data: {} }) === undefined, "a status event with nothing in it is not an entry");
+
+	// Noise stays out twice over: the subscription never asks for it, and the
+	// description refuses it even if it arrives.
+	for (const ignored of [
+		"pane_output_changed",
+		"pane_output_matched",
+		"pane_scroll_changed",
+		"layout_updated",
+		"pane_created",
+		"pane_closed",
+		"tab_closed",
+		"workspace_focused",
+	]) {
+		assert(describe({ event: ignored, data: { pane_id: "w6:p1", agent_status: "blocked" } }) === undefined, `${ignored} must not become an entry`);
+	}
+
+	// Through the broker: the audit rides the one subscription, so a written
+	// entry is proof that the event travelled the real path.
+	auditEntries.length = 0;
+	push("worktree_created", { worktree: { branch: "feat/audit", path: "/repo/audit" }, workspace: { workspace_id: "w9" } });
+	push("pane.agent_status_changed", { pane_id: "w1:p2", workspace_id: "w1", agent_status: "blocked", display_agent: "claude" });
+	// herdr re-announces a state after a reconnect; the log keeps the transition.
+	push("pane.agent_status_changed", { pane_id: "w1:p2", workspace_id: "w1", agent_status: "blocked", display_agent: "claude" });
+	// The pane this extension runs in is the session doing the logging.
+	push("pane.agent_status_changed", { pane_id: "w1:p1", workspace_id: "w1", agent_status: "blocked" });
+	await settle();
+	await settle();
+	assert(
+		auditEntries.map((entry) => entry.data?.summary).join(" | ") === "worktree created feat/audit | w1:p2 blocked (claude)",
+		`one entry per lifecycle event and per transition: ${JSON.stringify(auditEntries)}`,
+	);
+	assert(auditEntries.every((entry) => entry.type === AUDIT_CUSTOM_TYPE), "every entry carries the audit customType");
+	const auditSubscriptions = received
+		.filter((call) => call.method === "events.subscribe")
+		.flatMap((call) => (call.params.subscriptions as { type: string }[]).map((subscription) => subscription.type));
+	for (const wanted of ["worktree.created", "worktree.removed", "workspace.created", "workspace.closed"]) {
+		assert(auditSubscriptions.includes(wanted), `the subscription set must carry ${wanted}: ${[...new Set(auditSubscriptions)].join(",")}`);
+	}
+	assert(
+		!auditSubscriptions.some((type) => /output|scroll|layout/.test(type)),
+		`no high-frequency type may be subscribed to: ${[...new Set(auditSubscriptions)].join(",")}`,
+	);
+
+	// The renderer folds an entry into one line: a log is scanned, not read.
+	let renderer: ((entry: unknown, options: { expanded: boolean }, theme: unknown) => { render(width: number): string[] }) | undefined;
+	registerAuditRenderer({ registerEntryRenderer: (_customType: string, value: never) => (renderer = value) } as never);
+	const auditTheme = { fg: (_color: string, value: string) => value };
+	const collapsed = renderer!({ data: worktreeCreated }, { expanded: false }, auditTheme).render(80);
+	assert(
+		collapsed.length === 1 && collapsed[0]!.includes("worktree created feat/x"),
+		`an entry is one line: ${JSON.stringify(collapsed)}`,
+	);
+	assert(renderer!({ data: worktreeCreated }, { expanded: true }, auditTheme).render(80).length > 1, "expanded shows the payload");
+
+	// An event type herdr does not know refuses the whole set, every time. Retrying
+	// that set would spin, so the broker retries once — the set may only have named
+	// a pane that vanished — and then gives up with the reason on screen.
+	snapshot.panes.push({ pane_id: "w1:p8", workspace_id: "w1" });
+	snapshot.agents.push({ pane_id: "w1:p8", workspace_id: "w1", agent: "pi", agent_status: "idle" });
+	refuseAllSubscribes = true;
+	const beforeRefused = received.filter((call) => call.method === "events.subscribe").length;
+	push("pane_created", { pane: { pane_id: "w1:p8", workspace_id: "w1" } });
+	await settle();
+	await settle();
+	const afterRefused = received.filter((call) => call.method === "events.subscribe").length;
+	assert(afterRefused === beforeRefused + 2, `a permanently refused set must be retried once, not forever: ${afterRefused - beforeRefused}`);
+	await settle();
+	assert(
+		received.filter((call) => call.method === "events.subscribe").length === afterRefused,
+		"a set refused twice must stop being retried",
+	);
+	assert((broker.error() ?? "").includes("refused the same subscription set"), `the refusal must be surfaced: ${broker.error()}`);
+	refuseAllSubscribes = false;
 
 	const sentText = await broker.sendText("w1:p4", "approve");
 	assert(sentText.ok, "sendText should succeed");
@@ -1003,6 +1113,7 @@ try {
 		Object.assign(process.env, env);
 		const names: string[] = [];
 		extension({
+			registerEntryRenderer: (customType: string) => names.push(`entryRenderer:${customType}`),
 			registerCommand: (name: string) => names.push(`command:${name}`),
 			registerShortcut: (key: string) => names.push(`shortcut:${key}`),
 			on: (event: string) => names.push(`on:${event}`),
@@ -1015,8 +1126,8 @@ try {
 	assert(registered({}) === "", "outside herdr the extension must register nothing");
 	assert(
 		registered({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_SOCKET_PATH: "/tmp/not-used.sock" }) ===
-			"command:fleet,shortcut:ctrl+shift+a,on:session_start,on:session_shutdown",
-		"inside herdr the extension must register the command, the shortcut and both lifecycle events",
+			"entryRenderer:herdr-event,command:fleet,shortcut:ctrl+shift+a,on:session_start,on:session_shutdown",
+		"inside herdr the extension must register the renderer, the command, the shortcut and both lifecycle events",
 	);
 	assert(registered({ HERDR_ENV: "1" }) === "", "a missing socket path must keep the extension inert");
 	assert(registered({ HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" }) === "", "a missing socket path must keep the extension inert");
@@ -1029,6 +1140,7 @@ try {
 		const names: string[] = [];
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
 		extension({
+			registerEntryRenderer: () => {},
 			registerCommand: () => {},
 			registerShortcut: () => {},
 			registerTool: (definition: { name: string }) => names.push(definition.name),

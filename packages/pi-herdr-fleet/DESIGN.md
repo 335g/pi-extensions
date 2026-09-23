@@ -335,6 +335,63 @@ request-changes / マージ済み。
 2. 実装スコープに会話履歴を一切渡さない方針でよいか → **決着: 渡さない。** brief は完全に書く
 3. verdict の形式を固定してよいか → **決着: テキスト規約をやめ、`fleet_verdict` ツールにする**
 
+## 6. 監査ログ (`audit.ts`)
+
+herdr は履歴を持たない。pane が blocked になった、worktree が作られ、そして後で捨てられた — そういう
+出来事は次のものが来た瞬間に消える。「あの worktree はなぜ捨てたのか」を半年後に引く材料が残らない。
+
+Pi のセッションには JSONL が残り、`session_search` がそれを索引する。herdr のイベントを起きた瞬間に
+entry として書いておけば、fleet の過去が後から検索できる。
+
+- 購読は**既存のブローカーの 1 本**に相乗りする。pane 単位の状態イベントは pane 一覧を持っている
+  接続でしか届かず、その一覧を持っているのはブローカーだから。ブローカーは受けたイベントをそのまま
+  監査ログに渡し、書くかどうかを決めるのは監査ログ
+- 購読型は herdr の schema の名前に合わせて `worktree.created` / `worktree.removed` /
+  `workspace.created` / `workspace.closed` を足す。`pane.agent_status_changed` と
+  `pane.created` / `pane.closed` は既存のまま
+- entry の `customType` は `herdr-event`。LLM の文脈には入らない。`pi.registerEntryRenderer` が
+  1 行に畳む（`worktree created feat/x`、`w6:p1 blocked (claude)`）。展開すると JSON が出る
+- 記録は拡張が有効なときだけ（§1 の有効条件のガードのまま）
+- 購読型を増やしたぶん、その型を知らない古い herdr では集合が丸ごと拒否されうる。ブローカーは拒否
+  されたら snapshot から集合を組み直して一度だけ再試行し、同じ集合が再び拒否されたら止める（無限に
+  再試行しない）。herdr 0.9.0 は 4 つとも知っているので、この経路は実測していない
+
+### ノイズの抑制
+
+- 高頻度イベントは購読しない。`pane.output_changed` には購読型が無く、`pane.scroll_changed` /
+  `layout.updated` は購読しても entry にしない（`pane.output_matched` は一致したときだけ発火する
+  別物）。`describe()` は届いても entry にしない
+- 同じ pane の同じ状態が連続したら書かない。herdr は再接続後に状態を再通知する。ログは遷移の列で
+  あって、読み直しの列ではない
+- 拡張自身の pane は書かない。そのセッションのターンは会話にすでに残っている
+- `pane.created` / `pane.closed` / `tab.*` は購読しても entry にしない。pane の出入りは頻度が高く、
+  herdr 側の一覧を見れば足りる
+
+### 記録する出来事
+
+| イベント | entry の `summary` |
+|---|---|
+| `worktree.created` | `worktree created <branch>` |
+| `worktree.removed` | `worktree removed <branch>`（`forced` なら ` (forced)` が付く） |
+| `workspace.created` | `workspace created <label> (<workspace_id>)` |
+| `workspace.closed` | `workspace closed <workspace_id>` |
+| `pane.agent_status_changed` | `<pane_id> <status> (<agent>)` |
+
+entry は `summary` のほかに `event` / `at` / `pane_id` / `workspace_id` / `branch` / `path` /
+`agent` / `agent_status` / `forced` を持つ。`summary` は人が読む 1 行であると同時に、JSONL を素の
+テキストで検索したときに引っかかる文字列でもある。
+
+### 検証
+
+- `describe()` が schema の両方の綴り（pane 単位は点付き、ライフサイクルはアンダースコア）を同じ
+  種類に正規化し、高頻度イベントを entry にしないこと → `selfcheck.ts`
+- 購読型に高頻度のものが入らず、schema の名前だけが入ること → `selfcheck.ts`（型の一覧を検査）と両方
+  の acceptance（herdr は知らない型を含む集合を丸ごと拒否するので、イベントが届くこと自体が集合が
+  通ったことの証拠になる）
+- 同じ pane の同じ状態が 1 つの entry になり、状態を離れて戻ったら 2 つになること → `selfcheck.ts` と
+  `acceptance.sh`（実 pane で `pane.report_agent` を打ち直す）
+- worktree の作成と削除が実 pane で entry になること → `acceptance-fork.sh`
+
 ## テストの方針
 
 3 層に分ける。**実 pane で確かめられることは acceptance に置き、fake は fake でしか作れないものに限る。**

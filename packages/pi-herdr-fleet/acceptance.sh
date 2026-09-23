@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# End-to-end acceptance for the approval broker, against a real herdr server and
-# real panes. `selfcheck.ts` covers the logic against a fake socket; this covers
-# what only exists when herdr, direnv and a Pi TUI are all real.
+# End-to-end acceptance for the approval broker and the audit log, against a
+# real herdr server and real panes. `selfcheck.ts` covers the logic against a
+# fake socket; this covers what only exists when herdr, direnv and a Pi TUI are
+# all real.
 #
 # Three panes are needed, and that is not a harness accident:
 #
@@ -24,6 +25,43 @@ source "$(cd "$(dirname "$0")" && pwd)/acceptance-lib.sh"
 
 PROMPT_SCRIPT="$(mktemp -t fleet-acceptance)"
 register_path "$PROMPT_SCRIPT"
+
+# The observer's own session file, pinned so the audit-log checks can read what
+# the extension wrote without asking herdr for a path that appears late.
+#
+# It is created empty on purpose. Pi holds a session in memory until the first
+# assistant message arrives, so a *new* path would stay invisible to this script
+# while an *existing empty* one is initialised and appended to from the first
+# entry — which is what lets the audit checks run without a model call.
+OBSERVER_SCRATCH="$(mktemp -d -t fleet-accept-observer)"
+OBSERVER_SESSION="$OBSERVER_SCRATCH/observer.jsonl"
+register_path "$OBSERVER_SCRATCH"
+: >"$OBSERVER_SESSION"
+
+# How many audit entries recorded one pane in one state. Python, not grep: one
+# JSONL line carries the customType, the pane and the state, and a line-oriented
+# match cannot tell which entry a `blocked` belongs to.
+audit_count() { # audit_count <pane id> <agent status>
+	python3 - "$OBSERVER_SESSION" "$1" "$2" <<'PY'
+import json, sys
+try:
+    lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+except OSError:
+    lines = []
+count = 0
+for line in lines:
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        continue
+    if entry.get("type") != "custom" or entry.get("customType") != "herdr-event":
+        continue
+    data = entry.get("data") or {}
+    if data.get("pane_id") == sys.argv[2] and data.get("agent_status") == sys.argv[3]:
+        count += 1
+print(count)
+PY
+}
 
 # ---------------------------------------------------------------- preflight
 
@@ -63,7 +101,7 @@ sleep 1
 # The cwd is the repository root, so direnv loads .envrc and hands the observer
 # an API key. Without the environment copy that Phase 2 does, this Pi dies on
 # startup.
-start_observer "observer Pi started (direnv supplied the environment)" "fleet-accept-$$" "$OBSERVER" || exit 1
+start_observer "observer Pi started (direnv supplied the environment)" "fleet-accept-$$" "$OBSERVER" --session "$OBSERVER_SESSION" || exit 1
 
 # ---------------------------------------------------------------- 3. blocked
 
@@ -127,9 +165,38 @@ sleep 2
 expect_absent "the send reported no error" 'agent\.|pane\.|失敗|failed' "$(screen "$OBSERVER")"
 check "the subject received the keys" 'answered: n' "$(history "$SUBJECT")"
 
-# ---------------------------------------------------------------- 8. close
+# ---------------------------------------------------------------- 8. audit log
 
-say "8. overlay closes"
+# The subject was reported blocked in section 3, after the observer was up, so
+# the observer's audit log already has that transition. The entry itself is the
+# evidence: it means the event reached the extension and was written down.
+say "8. audit log: herdr events become session entries"
+deadline=$((SECONDS + 20))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	[ "$(audit_count "$SUBJECT" blocked)" -ge 1 ] && break
+	sleep 1
+done
+check "a blocked pane becomes a herdr-event entry" '^[1-9]' "$(audit_count "$SUBJECT" blocked)"
+
+# Reporting the same state again is not a transition. The count must not move,
+# whether herdr suppresses the second report or the audit log does.
+herdr pane report-agent "$SUBJECT" --source fleet-acceptance --agent subject --state blocked >/dev/null 2>&1
+sleep 2
+check "a repeated state is not logged a second time" '^1$' "$(audit_count "$SUBJECT" blocked)"
+
+# Leaving the state and coming back is a transition, so it is written.
+herdr pane report-agent "$SUBJECT" --source fleet-acceptance --agent subject --state working >/dev/null 2>&1
+sleep 1
+herdr pane report-agent "$SUBJECT" --source fleet-acceptance --agent subject --state blocked >/dev/null 2>&1
+sleep 2
+check "leaving and re-entering blocked is a second entry" '^2$' "$(audit_count "$SUBJECT" blocked)"
+check "the working transition is logged too" '^1$' "$(audit_count "$SUBJECT" working)"
+# The observer's own pane is the session doing the logging, so it is not news.
+check "the observer's own pane is not in the log" '^0$' "$(audit_count "$OBSERVER" working)"
+
+# ---------------------------------------------------------------- 9. close
+
+say "9. overlay closes"
 herdr pane send-keys "$OBSERVER" esc >/dev/null 2>&1
 sleep 1.5
 if screen "$OBSERVER" | grep -qE 'fleet ·'; then

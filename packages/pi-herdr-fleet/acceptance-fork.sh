@@ -900,6 +900,30 @@ check "the tool result reached the observer's conversation" "reviewing $TOOL_REV
 TOOL_REVIEW_AGENT="$(run_field "$TOOL_REVIEW_BRANCH" reviewer.agentName)"
 [ -n "$TOOL_REVIEW_AGENT" ] && ok "the tool path recorded its reviewer ($TOOL_REVIEW_AGENT)" || fail "the tool path recorded no reviewer"
 
+# ---------------------------------------------------------------- 15. audit log
+
+# herdr keeps no history, so the fleet's lifecycle is written into the observer's
+# session as it happens — that is what makes "why did we abandon that worktree?"
+# answerable a month later. Section 3 forked `$PREFIX/full`, whose creation is
+# the one to look for; section 6's `--no-start` worktree is the one nothing else
+# needs, so it is the one removed here.
+
+say "15. audit log: herdr lifecycle becomes session entries"
+audit_entry() { # audit_entry <fixed fragment of the summary>
+	grep -a 'herdr-event' "$OBSERVER_SESSION" 2>/dev/null | grep -aF "$1" | tail -1
+}
+
+deadline=$((SECONDS + 30))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	[ -n "$(audit_entry "worktree created $PREFIX/full")" ] && break
+	sleep 1
+done
+check "a created worktree is a herdr-event entry" "customType.:.herdr-event.*worktree created $PREFIX/full" "$(audit_entry "worktree created $PREFIX/full")"
+
+herdr worktree remove --workspace "$NOSTART_WS" --force >/dev/null 2>&1
+sleep 2
+check "a forced removal says so" "customType.:.herdr-event.*worktree removed $PREFIX/nostart \(forced\)" "$(audit_entry "worktree removed $PREFIX/nostart")"
+
 # ---------------------------------------------------------------- result
 
 fleet_result

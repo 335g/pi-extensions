@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import { ApprovalBroker, FleetOverlay, type Strings, strings } from "./approvals.ts";
+import { AuditLog, registerAuditRenderer } from "./audit.ts";
 import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient } from "./herdr-client.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
@@ -134,6 +135,7 @@ export default function (pi: ExtensionAPI) {
 	const herdr = HerdrClient.fromEnv();
 	if (!herdr) return;
 	const client: HerdrClient = herdr;
+	registerAuditRenderer(pi);
 
 	const run: CommandRunner = (command, args, options) => pi.exec(command, args, options);
 
@@ -379,10 +381,18 @@ export default function (pi: ExtensionAPI) {
 		broker?.stop();
 		config = readConfig();
 		const t = strings();
-		const next = new ApprovalBroker(client, (entry) => {
-			if (!config.notify) return;
-			ctx.ui.notify(t.blockedNotification(entry.name ?? entry.agent ?? entry.pane_id), "warning");
-		});
+		// The audit log (§6) rides the broker's subscription and writes what it is
+		// given as session entries. Both live and die with the session, so a stale
+		// pane's state is never carried into the next one.
+		const audit = new AuditLog((customType, data) => pi.appendEntry(customType, data), client.selfPaneId());
+		const next = new ApprovalBroker(
+			client,
+			(entry) => {
+				if (!config.notify) return;
+				ctx.ui.notify(t.blockedNotification(entry.name ?? entry.agent ?? entry.pane_id), "warning");
+			},
+			(event) => audit.record(event),
+		);
 		broker = next;
 		await next.start();
 	});

@@ -29,6 +29,7 @@ import {
 import {
 	type AgentStatus,
 	type HerdrClient,
+	type HerdrEvent,
 	type Outcome,
 	type Snapshot,
 	type SubscribeEvent,
@@ -46,24 +47,61 @@ export interface BlockedPane {
 	question?: string;
 }
 
-/** Events that change the pane set, and so the subscription set. */
-const LIFECYCLE_EVENTS = ["pane.created", "pane.closed"];
+/**
+ * The types this broker subscribes to besides the per-pane status changes.
+ *
+ * The first two change the pane set, and so the subscription set. The rest are
+ * the audit log's (§6): herdr keeps no history, so the fleet's lifecycle is
+ * written down as it happens. The names are herdr's schema's own subscription
+ * names, and a set with a name it does not know is refused whole.
+ *
+ * The high-frequency types are absent on purpose: `pane.output_changed` has no
+ * subscription at all, `pane.output_matched` fires only on a match, and nothing
+ * here probes pane output.
+ */
+const LIFECYCLE_EVENTS = [
+	"pane.created",
+	"pane.closed",
+	"workspace.created",
+	"workspace.closed",
+	"worktree.created",
+	"worktree.removed",
+];
 
 export class ApprovalBroker {
 	private readonly client: HerdrClient;
 	private readonly onNewBlocked: (entry: BlockedPane) => void;
+	private readonly onEvent: ((event: HerdrEvent) => void) | undefined;
 	private readonly blocked = new Map<string, BlockedPane>();
 	private handle: SubscriptionHandle | undefined;
 	private coveredPanes = "";
+	/**
+	 * The pane set whose subscription herdr refused last time. A set is refused
+	 * for one of two reasons: a pane that vanished between the snapshot and the
+	 * subscribe (the rebuilt set omits it), or an event type this herdr does not
+	 * know (the rebuilt set is identical). Only the second is permanent.
+	 */
+	private refusedCovered: string | undefined;
 	/** New-blocked notifications only make sense once the first snapshot landed. */
 	private primed = false;
 	private stopped = true;
 	private lastError: string | undefined;
 	private onChange: (() => void) | undefined;
 
-	constructor(client: HerdrClient, onNewBlocked: (entry: BlockedPane) => void) {
+	constructor(
+		client: HerdrClient,
+		onNewBlocked: (entry: BlockedPane) => void,
+		/**
+		 * Every event on the subscription, before it is routed. The audit log (§6)
+		 * is built on this rather than on a second subscription: the pane-scoped
+		 * status events only arrive on a connection that subscribed per pane, and
+		 * the pane list is the broker's.
+		 */
+		onEvent?: (event: HerdrEvent) => void,
+	) {
 		this.client = client;
 		this.onNewBlocked = onNewBlocked;
+		this.onEvent = onEvent;
 	}
 
 	entries(): BlockedPane[] {
@@ -90,6 +128,7 @@ export class ApprovalBroker {
 		this.handle?.close();
 		this.handle = undefined;
 		this.coveredPanes = "";
+		this.refusedCovered = undefined;
 		this.blocked.clear();
 		this.primed = false;
 		this.lastError = undefined;
@@ -183,10 +222,20 @@ export class ApprovalBroker {
 			// The stream was rebuilt: trust herdr over anything derived from the old one.
 			if (event.reason === "refused") {
 				// The set that failed is the one in `coveredPanes`; dropping it makes
-				// the resubscribe below open a fresh set from the new snapshot.
+				// the resubscribe below open a fresh set from the new snapshot. If that
+				// fresh set is the same one, the cause is the set itself — a type this
+				// herdr does not know — and retrying it would refuse forever.
+				const refusedSet = this.coveredPanes;
 				this.handle?.close();
 				this.handle = undefined;
 				this.coveredPanes = "";
+				if (this.refusedCovered === refusedSet) {
+					this.lastError = "herdr refused the same subscription set twice; not retrying it";
+					if (event.snapshot.ok) this.apply(event.snapshot.value);
+					this.notifyChange();
+					return;
+				}
+				this.refusedCovered = refusedSet;
 			}
 			if (event.snapshot.ok) {
 				this.lastError = undefined;
@@ -200,6 +249,10 @@ export class ApprovalBroker {
 		}
 
 		const { event: name, data } = event.event;
+		// A live event proves the accepted set was the rebuilt one, so the next
+		// refusal gets its own retry.
+		this.refusedCovered = undefined;
+		this.onEvent?.(event.event);
 		if (name === "pane.agent_status_changed") {
 			this.onStatusChanged(data);
 			return;

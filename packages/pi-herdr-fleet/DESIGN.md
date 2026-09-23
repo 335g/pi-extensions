@@ -306,22 +306,30 @@ worktree ごとの状態を持つときに行う。
 - 入口のパスは `import.meta.url` から取る
 - `-ne` は付けない。レビュワーにも普段の拡張を効かせる
 
-#### `/fleet status`
+#### `fleet_status` ツールと `/fleet status`
 
 run ごとに branch / scope / 状態 / verdict を出す。状態は 作業中 / 未レビュー / approve /
-request-changes / マージ済み。
+request-changes / マージ済み。**ツールが主、コマンドは薄いラッパ**で、どちらも `statusRuns(run, main)`
+が返す同じ行を読む。違うのは言葉だけで、コマンドは `strings()` で日本語にする。引数は無い。
 
-#### `/fleet merge <branch> [--force]`
+マージ済みかどうかは記録のフィールドではなく main checkout の履歴に聞く（`git merge-base
+--is-ancestor`）。手で merge された branch も「マージ済み」と出る。
 
-- `verdict.verdict === "approve"` でなければ拒否する。`--force` で上書きできる
+#### `fleet_merge` ツールと `/fleet merge <branch> [--force]`
+
+**ツールが主、コマンドは薄いラッパ**で、どちらも `mergeRun(run, request)` を呼ぶ。引数は `branch`
+（必須）と `force`（任意、既定 false）。
+
+- `verdict.verdict === "approve"` でなければ拒否する。`force: true` / `--force` で上書きできる。
+  `force` が上書きするのは approve の欠如だけで、下の汚れは上書きしない
 - main checkout の**追跡**ファイルが汚れていれば拒否する（`git status --porcelain --untracked-files=no`）。
   実行記録自体が main checkout の `.pi/` の下にあるので、未追跡を汚れとして扱うとゲートが自分の状態で
   永久に閉じる。未追跡ファイルとの衝突は `git merge` 自身が拒否する
 - `git merge <branch>` を main checkout で実行する。`--ff-only` は使わない（必要なら merge commit を
   作る。`--no-edit`）
 - マージ後も run の記録は残し、worktree は消さない。後始末は別の操作にする
-- このリポジトリでは `pi-autocommit` が agent の `git merge` をブロックする。ブロックされたらその
-  メッセージをそのまま見せる（拡張が回避するものではない）
+
+ツールの説明には、マージが approve を前提とすること、`force` の意味、worktree が残ることを書く。
 
 #### 差し戻し
 
@@ -398,12 +406,12 @@ entry は `summary` のほかに `event` / `at` / `pane_id` / `workspace_id` / `
 
 | ファイル | 行数 | 役割 |
 |---|---|---|
-| `selfcheck.ts` | 1050 | fake herdr サーバに対する、fake でしか作れない検査 |
+| `selfcheck.ts` | 1223 | fake herdr サーバに対する、fake でしか作れない検査 |
 | `acceptance-lib.sh` | 199 | 2 つの acceptance が共有する harness |
-| `acceptance.sh` | 143 | Phase 1/2 の実 pane 受入試験（約 30 秒） |
-| `acceptance-fork.sh` | 905 | Phase 3a/3b/3c の実 pane 受入試験（数分） |
+| `acceptance.sh` | 210 | Phase 1/2 の実 pane 受入試験（約 30 秒） |
+| `acceptance-fork.sh` | 1027 | Phase 3a/3b/3c の実 pane 受入試験（数分） |
 
-実装（`fork.ts` 216 行 + `review.ts` 471 行）に対して試験は大きい。リポジトリの慣例
+実装（`fork.ts` 216 行 + `review.ts` 471 行 + `runs.ts` 414 行）に対して試験は大きい。リポジトリの慣例
 （`pi-byetheway/selfcheck.ts` 74 行）からは外れている。穴を見つけているので無駄ではないが、
 増分ごとに selfcheck +150 行 / acceptance +250 行が積み上がるペースは持続しない。増分を足すときの
 判断は 3 つ。
@@ -444,7 +452,7 @@ packages/pi-herdr-fleet/
   recipes.ts           レシピ
   worktree.ts          worktree 作成と環境の引き継ぎ
   scopes.ts            Phase 3 のスコープ registry（seed の組み立て）
-  runs.ts              実行記録とマージゲート
+  runs.ts              実行記録、status / merge の実装とツール、マージゲート
   fork.ts              ツール `fleet_fork` とコマンド `/fleet fork` の共通実装
   review.ts            ツール `fleet_review` とコマンド `/fleet review` の共通実装
   selfcheck.ts         fake herdr サーバに対する、fake でしか作れない検査
@@ -488,6 +496,10 @@ blocked にした shell）・observer（この拡張を読み込んだ Pi）・�
   生えるので、fork は worktree workspace の root pane を明示する
 - install 直後の `agent.start` は `agent_pane_busy` になる（実測 3/3）。リトライと settled 待ちが必要。
   herdr のエラー本文に code が含まれないため、`Outcome` に code を持たせないとリトライ判定ができない
+- `fleet_merge` も `/fleet merge` も `pi.exec` で `git merge` を実行する。`pi-autocommit` のガードは
+  agent の **bash ツール呼び出し**を覗いているので、この経路は素通りする。人間が打ったコマンドとしては
+  通ってよいとも言えるが、いまはツールから agent も同じ経路を打てるので、**止める場所はゲート（approve
+  と clean な main checkout）だけ**になる。暗黙の依存なのでここに書き残す
 
 Phase 3 の検証（増分ごとに追記する）:
 
@@ -501,5 +513,7 @@ Phase 3 の検証（増分ごとに追記する）:
   → `acceptance-fork.sh` 9 節と、実セッション 2.1MB を `readAuthorSession` に通した確認
 - linked worktree からの fork が、fork 点を呼び出し元の HEAD に固定して未コミット変更を警告すること
   → `acceptance-fork.sh` 10 節
-- **未検証**: `fleet_review` を agent に呼ばせた実 pane 試験（実 pane はコマンド経路のみ。ツール経路は
-  selfcheck のスキーマと拒否検査だけ）。60000 文字を超える実 diff の切り詰め。4MB を超える実セッション
+- `fleet_status` が実 pane の agent から呼べて run の一覧を返し、`fleet_merge` が approve なしで拒否
+  され、approve 後に通ってスクラッチの main checkout に本当にマージすること
+  → `acceptance-fork.sh` 16 節（ツール経路。コマンド経路は 11〜13 節）
+- **未検証**: 60000 文字を超える実 diff の切り詰め。4MB を超える実セッション

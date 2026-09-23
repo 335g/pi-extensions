@@ -22,11 +22,14 @@ import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
 import { fleetReviewTool, readAuthorSession, reviewWorktree } from "./review.ts";
 import {
 	type RunRecord,
+	fleetMergeTool,
+	fleetStatusTool,
 	fleetVerdictTool,
 	mergeRun,
 	readRun,
 	runFileName,
 	runState,
+	statusRuns,
 	updateRun,
 	writeRun,
 } from "./runs.ts";
@@ -1026,6 +1029,64 @@ try {
 	answer = gateGit({ "merge --no-edit feat/gate": "" });
 	assert((await mergeRun(run, { cwd: gateMain, branch: "feat/gate", force: true })).ok, "--force overrides a missing approve");
 
+	// ------------------------------------------------------------ status tools
+
+	// The rows are one function behind `fleet_status` and `/fleet status`; the two
+	// callers only word them differently. One git question per run decides whether
+	// it is merged, so a branch merged by hand still reads as merged.
+	const listMain = mkdtempSync(join(scratch, "status-main-"));
+	writeRun(listMain, { ...record, branch: "feat/working" });
+	writeRun(listMain, { ...record, branch: "feat/approved", verdict: { verdict: "approve", findings: [], at: "now" } });
+	writeRun(listMain, { ...record, branch: "feat/merged" });
+	answer = (command, args) => {
+		if (command !== "git") return { stdout: "", stderr: "", code: 0, killed: false };
+		if (args[0] === "worktree") return { stdout: `worktree ${listMain}\n\n`, stderr: "", code: 0, killed: false };
+		if (args[0] === "merge-base") return { stdout: "", stderr: "", code: args[2] === "feat/merged" ? 0 : 1, killed: false };
+		return { stdout: "", stderr: "", code: 0, killed: false };
+	};
+	const rows = await statusRuns(run, listMain);
+	assert(
+		rows.map((row) => `${row.branch} ${row.state} ${row.verdict}`).join(",") ===
+			"feat/approved approve approve,feat/merged merged -,feat/working working -",
+		`statusRuns lists every run with its state: ${JSON.stringify(rows)}`,
+	);
+
+	const statusTool = fleetStatusTool(run);
+	assert(statusTool.name === "fleet_status", `the tool name is the API: ${statusTool.name}`);
+	assert((statusTool.parameters as any).required === undefined, "fleet_status takes no arguments");
+	const listed = await statusTool.execute("s1", {}, undefined, undefined, { mode: "tui", cwd: listMain } as never);
+	assert(
+		(listed.content[0] as { text: string }).text.split("\n").length === 3,
+		`fleet_status returns one line per run: ${JSON.stringify(listed.content)}`,
+	);
+
+	// The merge tool turns the gate's refusal into a thrown error: a returned
+	// value never sets the error flag, so the model has to see the merge fail.
+	const mergeTool = fleetMergeTool(run);
+	const mergeSchema = mergeTool.parameters as any;
+	assert(
+		mergeTool.name === "fleet_merge" && mergeSchema.required.join() === "branch" && mergeSchema.properties.force.type === "boolean",
+		`fleet_merge takes a branch and an optional force: ${JSON.stringify(mergeSchema)}`,
+	);
+	answer = gitAnswer({ "worktree list --porcelain": `worktree ${gateMain}\n\n` });
+	writeRun(gateMain, { ...record, branch: "feat/tool-merge" });
+	let mergeRefusal = "";
+	try {
+		await mergeTool.execute("m1", { branch: "feat/tool-merge" }, undefined, undefined, { mode: "tui", cwd: gateMain } as never);
+	} catch (error) {
+		mergeRefusal = error instanceof Error ? error.message : String(error);
+	}
+	assert(mergeRefusal.includes("no approve verdict"), `fleet_merge refuses without an approve: ${JSON.stringify(mergeRefusal)}`);
+
+	updateRun(gateMain, "feat/tool-merge", { verdict: { verdict: "approve", findings: [], at: "now" } });
+	answer = gateGit({ "merge --no-edit feat/tool-merge": "Fast-forward\n" });
+	const done = await mergeTool.execute("m2", { branch: "feat/tool-merge" }, undefined, undefined, { mode: "tui", cwd: gateMain } as never);
+	assert(
+		(done.content[0] as { text: string }).text.includes("merged feat/tool-merge") &&
+			(done.content[0] as { text: string }).text.includes("worktree was left in place"),
+		`fleet_merge reports the merge and the surviving worktree: ${JSON.stringify(done.content)}`,
+	);
+
 	// ---------------------------------------------------------------- verdict
 
 	const entries: unknown[] = [];
@@ -1151,7 +1212,7 @@ try {
 		process.env = saved;
 		return names.join();
 	};
-	assert((await toolsIn("tui")) === "fleet_fork,fleet_review,fleet_verdict", "an interactive session must register every tool");
+	assert((await toolsIn("tui")) === "fleet_fork,fleet_review,fleet_verdict,fleet_status,fleet_merge", "an interactive session must register every tool");
 	assert((await toolsIn("print")) === "", "a print session must register no tool");
 
 	console.log("pi-herdr-fleet: ok");

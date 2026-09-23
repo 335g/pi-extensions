@@ -45,6 +45,8 @@ pi install npm:@335g/pi-herdr-fleet
   `install` / `start`
 - `fleet_review` ツール — 同じことを agent から呼ぶ。引数は `branch` / `task` / `base`
 - `fleet_verdict` ツール — レビュワーが verdict を記録する。引数は `verdict` / `findings`
+- `fleet_status` ツール — 同じ一覧を agent から呼ぶ。引数なし
+- `fleet_merge` ツール — 同じマージを agent から呼ぶ。引数は `branch` / `force`
 
 | キー | 動作 |
 |------|------|
@@ -278,6 +280,10 @@ fork・review・verdict はブランチごとに 1 つのファイルに記録�
 `/fleet merge` は main checkout で `git merge --no-edit` を実行する。verdict が `approve` でなければ
 （`--force` が無ければ）拒否し、追跡ファイルが汚れていても拒否する。未追跡ファイルは止めない。run の
 記録自体が `.pi/` の下にあるため。worktree は消さない。後始末は別の操作にする。
+
+どちらもツールでもある（`fleet_status` は引数なし、`fleet_merge` は `branch` と任意の `force`）。
+コマンドは、ツールと同じ `statusRuns` / `mergeRun` を呼ぶ薄いラッパ。人間がキーボードの前に
+いなくてもループが閉じる — agent が fork し、review し、そのまま merge できる。
 
 ## 通知
 

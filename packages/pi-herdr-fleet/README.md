@@ -41,8 +41,8 @@ project settings (`.pi/settings.json`) instead.
   worktree, with the diff and the author's own session
 - `/fleet status` — every recorded run: branch, scope, state and verdict
 - `/fleet merge <branch> [--force]` — merge an approved branch into the main checkout
-- `fleet_fork` / `fleet_review` / `fleet_verdict` — the same from an agent, as tools rather than a
-  command line
+- `fleet_fork` / `fleet_review` / `fleet_verdict` / `fleet_status` / `fleet_merge` — the same from
+  an agent, as tools rather than a command line
 
 | Key | Action |
 |-----|--------|
@@ -289,6 +289,10 @@ already in the main checkout's history).
 `approve` (or `--force` is given) and the tracked files are clean. Untracked files do not block it,
 because the run records themselves live under `.pi/`. The worktree is left in place: cleanup is its
 own operation.
+
+Both are tools as well — `fleet_status` (no arguments) and `fleet_merge` (`branch`, optional
+`force`) — and the commands are thin wrappers over the same `statusRuns` and `mergeRun` the tools
+call. The loop closes without a human at the keyboard: an agent can fork, review, and then merge.
 
 ## Notifications
 

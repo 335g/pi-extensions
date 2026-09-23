@@ -924,6 +924,104 @@ herdr worktree remove --workspace "$NOSTART_WS" --force >/dev/null 2>&1
 sleep 2
 check "a forced removal says so" "customType.:.herdr-event.*worktree removed $PREFIX/nostart \(forced\)" "$(audit_entry "worktree removed $PREFIX/nostart")"
 
+# ---------------------------------------------------------------- 16. status and merge tools
+
+# The loop has to close without a human at the keyboard. `/fleet status` and
+# `/fleet merge` were commands, and an agent cannot type one; both are tools now.
+# This is the only place the tool path runs end to end — a real model calling
+# `fleet_status` for the list, being refused a merge with no approve, and being
+# allowed it once the approve is recorded. The merge runs in the scratch
+# repository, never in the repository this script lives in.
+
+say "16. fleet_status and fleet_merge as tools"
+TOOL_GATE_BRANCH="$PREFIX/toolgate"
+# A branch with a real commit on it, so the merge has something to bring in. It
+# is built in the gate worktree, which is already merged and idle by now.
+git -C "$GATE_PATH" checkout -q -b "$TOOL_GATE_BRANCH"
+printf 'TOOLGATE\n' >"$GATE_PATH/toolgate-marker.txt"
+git -C "$GATE_PATH" add toolgate-marker.txt
+git -C "$GATE_PATH" -c user.email=fleet@accept -c user.name=fleet commit -qm "toolgate"
+# The record, with no verdict: the gate has to refuse it. That a real reviewer
+# writes an approve is section 12's subject; what is under test here is the gate
+# the tool drives.
+python3 - "$(run_file "$GATE_BRANCH")" "$(run_file "$TOOL_GATE_BRANCH")" "$TOOL_GATE_BRANCH" <<'PY'
+import json, sys
+record = json.load(open(sys.argv[1]))
+for key in ("verdict", "reviewer", "mergedAt"):
+    record.pop(key, None)
+record["branch"] = sys.argv[3]
+json.dump(record, open(sys.argv[2], "w"), indent=2)
+PY
+if [ -f "$(run_file "$TOOL_GATE_BRANCH")" ]; then
+	ok "a run with no verdict is on record for the tool merge"
+else
+	fail "no run record was written for $TOOL_GATE_BRANCH"
+fi
+
+# The list is the agent's view of the loop, returned as a tool result.
+ask "Call the fleet_status tool exactly once. It takes no arguments. Then stop."
+STATUS_TOOL=""
+deadline=$((SECONDS + 240))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	if grep -aq "$TOOL_GATE_BRANCH · implementation · working" "$OBSERVER_SESSION" 2>/dev/null; then STATUS_TOOL="yes"; break; fi
+	sleep 1
+done
+if [ -n "$STATUS_TOOL" ]; then
+	ok "the agent's fleet_status call returned the run list"
+else
+	fail "the agent's fleet_status call returned no run list"
+	dump_pane "$OBSERVER" 20
+fi
+check "the tool's list carries branch, scope, state and verdict" "$TOOL_GATE_BRANCH · implementation · working · -" "$(grep -a "$TOOL_GATE_BRANCH" "$OBSERVER_SESSION" 2>/dev/null | tail -1)"
+
+# No approve: the tool must refuse, and git must not run.
+ask "Call the fleet_merge tool with branch \"$TOOL_GATE_BRANCH\". Report the exact error you get, and do not retry or use another tool."
+TOOL_REFUSED=""
+deadline=$((SECONDS + 240))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	if grep -aq 'no approve verdict' "$OBSERVER_SESSION" 2>/dev/null; then TOOL_REFUSED="yes"; break; fi
+	sleep 1
+done
+if [ -n "$TOOL_REFUSED" ]; then
+	ok "the tool refused a merge with no approve"
+else
+	fail "the tool did not refuse the merge"
+	dump_pane "$OBSERVER" 20
+fi
+if [ -f "$REPO/toolgate-marker.txt" ]; then
+	fail "the refused tool merge still merged"
+else
+	ok "the refused tool merge left main alone"
+fi
+
+# With the approve recorded, the same call goes through.
+python3 - "$(run_file "$TOOL_GATE_BRANCH")" <<'PY'
+import json, sys
+record = json.load(open(sys.argv[1]))
+record["verdict"] = {"verdict": "approve", "findings": [], "at": "2020-01-01T00:00:00.000Z"}
+json.dump(record, open(sys.argv[1], "w"), indent=2)
+PY
+ask "Call the fleet_merge tool with branch \"$TOOL_GATE_BRANCH\". Then stop."
+TOOL_MERGED=""
+deadline=$((SECONDS + 240))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	if grep -aq "merged $TOOL_GATE_BRANCH" "$OBSERVER_SESSION" 2>/dev/null; then TOOL_MERGED="yes"; break; fi
+	sleep 1
+done
+if [ -n "$TOOL_MERGED" ]; then
+	ok "the tool merged the approved branch"
+else
+	fail "the tool did not merge the approved branch"
+	dump_pane "$OBSERVER" 20
+fi
+check "main now carries the tool-merged work" 'TOOLGATE' "$(cat "$REPO/toolgate-marker.txt" 2>/dev/null)"
+check "the tool reports the surviving worktree" 'worktree was left in place' "$(grep -a "merged $TOOL_GATE_BRANCH" "$OBSERVER_SESSION" 2>/dev/null | tail -1)"
+if git -C "$REPO" worktree list --porcelain 2>/dev/null | grep -qF "worktree $GATE_PATH"; then
+	ok "the worktree survived the merge"
+else
+	fail "the merge removed the worktree"
+fi
+
 # ---------------------------------------------------------------- result
 
 fleet_result

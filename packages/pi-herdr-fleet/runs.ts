@@ -16,6 +16,11 @@
  * `fleet_verdict` executes inside the reviewer's own session, which is why it
  * checks the calling pane against the run it recorded: the extension is loaded
  * in every Pi session, so without that check any session could write a verdict.
+ *
+ * `fleet_status` and `fleet_merge` are the other two calls that close the loop:
+ * a tool is what an agent can drive, and a command alone would put a human in
+ * the middle of every round. `/fleet status` and `/fleet merge` are thin
+ * wrappers over `statusRuns` and `mergeRun`, the same functions the tools call.
  */
 
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -126,6 +131,37 @@ export function runState(record: RunRecord, merged: boolean): RunState {
 export async function isMerged(run: CommandRunner, main: string, branch: string): Promise<boolean> {
 	const result = await run("git", ["merge-base", "--is-ancestor", branch, "HEAD"], { cwd: main, timeout: GIT_TIMEOUT_MS });
 	return result.code === 0;
+}
+
+/** One row of the status list, before either caller gives it its own words. */
+export interface RunStatus {
+	branch: string;
+	scope: string;
+	state: RunState;
+	/** The verdict name, or `-` when there is none. */
+	verdict: string;
+}
+
+/**
+ * Every recorded run with its state. One implementation behind `fleet_status`
+ * and `/fleet status`: the list is the loop's own view of itself, and two
+ * versions of it would disagree about what is mergeable.
+ *
+ * One git call per run — `merged` is the main checkout's history, not a field
+ * in the record, so a branch merged by hand still reads as merged.
+ */
+export async function statusRuns(run: CommandRunner, main: string): Promise<RunStatus[]> {
+	const rows: RunStatus[] = [];
+	for (const record of listRuns(main)) {
+		const merged = await isMerged(run, main, record.branch);
+		rows.push({
+			branch: record.branch,
+			scope: record.scope,
+			state: runState(record, merged),
+			verdict: record.verdict?.verdict ?? "-",
+		});
+	}
+	return rows;
 }
 
 // -------------------------------------------------------------- the verdict
@@ -286,4 +322,93 @@ export async function mergeRun(run: CommandRunner, request: MergeRequest): Promi
 
 function firstLine(text: string): string | undefined {
 	return text.split("\n").find((line) => line.trim() !== "")?.trim();
+}
+
+// ------------------------------------------------------------- the tools
+
+/** The five states, in the tool's language. `stateLabel` is the command's. */
+const STATE_TEXT: Record<RunState, string> = {
+	working: "working",
+	unreviewed: "unreviewed",
+	approve: "approve",
+	"request-changes": "request-changes",
+	merged: "merged",
+};
+
+/** No arguments: the list is the main checkout's own record. */
+const STATUS_PARAMETERS = Type.Object({});
+
+/**
+ * The tool an agent calls to see the loop's state. Same rows as `/fleet status`,
+ * but the result is a conversation entry, which is what lets a driving agent
+ * decide what to review or merge without a human reading a toast.
+ */
+export function fleetStatusTool(run: CommandRunner): ToolDefinition<typeof STATUS_PARAMETERS> {
+	return {
+		name: "fleet_status",
+		label: "Fleet status",
+		description:
+			"List every recorded fleet run, one per branch that fleet_fork created, with its branch, scope, state and verdict. A state is working, unreviewed, approve, request-changes, or merged when the branch is already in the main checkout's history. Read-only, and takes no arguments.",
+		promptSnippet: "List every recorded run with its branch, scope, state and verdict",
+		promptGuidelines: [
+			"Call fleet_status to see which branches are still working, waiting on a review, approved or already merged.",
+			"Only a run whose state is approve may be merged; fleet_merge refuses the rest unless force is set.",
+		],
+		parameters: STATUS_PARAMETERS,
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx: ExtensionContext) {
+			if (ctx.mode !== "tui") throw new Error("fleet_status only works in an interactive Pi session");
+			const main = await mainCheckout(run, ctx.cwd);
+			if (!main) throw new Error(`fleet_status: ${ctx.cwd} is not inside a git checkout, so no run can be listed`);
+			const rows = await statusRuns(run, main);
+			const lines = rows.length === 0 ? [`no run has been recorded in ${main}`] : rows.map((row) => statusLine(row));
+			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: { main, runs: rows } };
+		},
+	};
+}
+
+/** `branch · scope · state · verdict`, the same shape the command prints. */
+function statusLine(row: RunStatus): string {
+	return `${row.branch} · ${row.scope} · ${STATE_TEXT[row.state]} · ${row.verdict}`;
+}
+
+const MERGE_PARAMETERS = Type.Object({
+	branch: Type.String({ description: "The branch to merge. It must have a run whose recorded verdict is approve, unless force is set." }),
+	force: Type.Optional(
+		Type.Boolean({
+			description:
+				"Merge even though the recorded verdict is not approve. Defaults to false. It does not bypass a dirty main checkout.",
+		}),
+	),
+});
+
+/**
+ * The tool that closes the loop. `mergeRun` is the gate and git call; the tool
+ * only turns its refusal into a thrown error, because a returned value never
+ * sets the error flag and the agent has to know the merge did not happen.
+ */
+export function fleetMergeTool(run: CommandRunner): ToolDefinition<typeof MERGE_PARAMETERS> {
+	return {
+		name: "fleet_merge",
+		label: "Fleet merge",
+		description:
+			"Merge a reviewed branch into the main checkout with `git merge --no-edit`. It presumes the run's recorded verdict is approve and refuses otherwise; pass force to merge anyway. Either way it refuses while the main checkout has uncommitted tracked changes. The branch's worktree is left in place: merging is not cleanup.",
+		promptSnippet: "Merge a branch whose review recorded approve into the main checkout",
+		promptGuidelines: [
+			"Call fleet_merge once a review has recorded approve; set force only when the human asks for it, and say why.",
+			"fleet_merge leaves the worktree in place, so a merged branch is still cleaned up separately.",
+		],
+		parameters: MERGE_PARAMETERS,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+			if (ctx.mode !== "tui") throw new Error("fleet_merge only works in an interactive Pi session");
+			const merged = await mergeRun(run, { cwd: ctx.cwd, branch: params.branch, force: params.force });
+			if (!merged.ok) throw new Error(merged.error);
+			const lines = [
+				`merged ${merged.value.branch} into ${merged.value.main}`,
+				`verdict: ${merged.value.verdict ?? "none (forced)"}`,
+			];
+			if (merged.value.output) lines.push(merged.value.output);
+			lines.push("the worktree was left in place");
+			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: merged.value };
+		},
+	};
 }

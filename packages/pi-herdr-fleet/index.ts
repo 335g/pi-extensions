@@ -25,7 +25,7 @@ import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient } from "./herdr-client.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
 import { fleetReviewTool, reviewWorktree } from "./review.ts";
-import { type RunState, fleetVerdictTool, isMerged, listRuns, mergeRun, runState } from "./runs.ts";
+import { type RunState, fleetMergeTool, fleetStatusTool, fleetVerdictTool, mergeRun, statusRuns } from "./runs.ts";
 import {
 	type CommandRunner,
 	type EnvPropagation,
@@ -281,25 +281,16 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(t.notACheckout, "error");
 			return;
 		}
-		const records = listRuns(main);
-		if (records.length === 0) {
+		// The rows come from `statusRuns`, which is also what `fleet_status`
+		// returns; only the words differ, because this is read by a human.
+		const rows = await statusRuns(run, main);
+		if (rows.length === 0) {
 			ctx.ui.notify(t.statusNone, "info");
 			return;
 		}
 		// One message rather than one toast per run: the list is the point, and
 		// toasts expire.
-		const lines = [t.statusHeader];
-		for (const record of records) {
-			const merged = await isMerged(run, main, record.branch);
-			lines.push(
-				t.statusLine({
-					branch: record.branch,
-					scope: record.scope,
-					state: stateLabel(runState(record, merged), t),
-					verdict: record.verdict?.verdict ?? "-",
-				}),
-			);
-		}
+		const lines = [t.statusHeader, ...rows.map((row) => t.statusLine({ ...row, state: stateLabel(row.state, t) }))];
 		ctx.ui.notify(lines.join("\n"), "info");
 	}
 
@@ -378,6 +369,8 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool(fleetForkTool(client, run));
 		pi.registerTool(fleetReviewTool(client, run));
 		pi.registerTool(fleetVerdictTool(client, run, pi));
+		pi.registerTool(fleetStatusTool(run));
+		pi.registerTool(fleetMergeTool(run));
 		broker?.stop();
 		config = readConfig();
 		const t = strings();

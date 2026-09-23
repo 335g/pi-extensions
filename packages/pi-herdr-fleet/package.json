@@ -26,7 +26,8 @@
     "scopes.ts",
     "runs.ts",
     "fork.ts",
-    "review.ts"
+    "review.ts",
+    "clean.ts"
   ],
   "publishConfig": {
     "access": "public"

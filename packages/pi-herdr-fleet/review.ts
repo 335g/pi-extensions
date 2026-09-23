@@ -264,9 +264,19 @@ export async function reviewWorktree(
 	});
 	if (!prepared.ok) return err(`review: ${prepared.error} (the review is of what is already at ${path})`);
 
-	const agent = agentName(branch, "review");
+	// A review of a branch that was sent back is a second review of the same
+	// branch, and an agent name is taken once. The name has to be free before
+	// `agent.start`, or herdr refuses it and the pane is left behind.
+	const agent = await freeAgentName(client, branch, "review");
 	const started = await startAgent(client, { paneId: prepared.value.paneId, name: agent, args: ["-e", ENTRY] });
-	if (!started.ok) return err(`review: ${started.error} (the pane is ${prepared.value.paneId})`);
+	if (!started.ok) {
+		// The pane is this call's own: a failed start must not leave it on screen.
+		const closed = await client.request("pane.close", { pane_id: prepared.value.paneId });
+		const where = closed.ok
+			? `the pane ${prepared.value.paneId} was closed`
+			: `the pane ${prepared.value.paneId} could not be closed: ${closed.error}`;
+		return err(`review: ${started.error} (${where})`);
+	}
 
 	const sent = await sendSeed(
 		client,
@@ -394,6 +404,40 @@ async function sessionOf(client: HerdrClient, paneId: string): Promise<string | 
 	if (!snapshot.ok) return undefined;
 	const value = snapshot.value.agents.find((agent) => agent.pane_id === paneId)?.agent_session?.value;
 	return typeof value === "string" ? value : undefined;
+}
+
+/** How many `-2`, `-3`, ... suffixes to try before letting herdr report the clash. */
+const AGENT_NAME_ATTEMPTS = 50;
+
+/**
+ * The reviewer's agent name, unique for this review.
+ *
+ * `<branch>-review` is the name the first review of a branch takes, and herdr
+ * refuses a second `agent.start` with a name that is already used — which is
+ * exactly what a send-back followed by a re-review does. The live agents are
+ * herdr's own answer to "is this name taken", so the suffix is chosen from the
+ * snapshot: `-review`, `-review-2`, `-review-3`, ...
+ *
+ * The check is not a lock. Two reviews started at the same instant could still
+ * pick the same name; the loser gets `agent_name_taken` and closes its pane.
+ */
+export async function freeAgentName(client: HerdrClient, branch: string, suffix: string): Promise<string> {
+	const taken = await takenAgentNames(client);
+	const first = agentName(branch, suffix);
+	if (!taken.has(first)) return first;
+	for (let index = 2; index <= AGENT_NAME_ATTEMPTS; index += 1) {
+		const candidate = agentName(branch, `${suffix}-${index}`);
+		if (!taken.has(candidate)) return candidate;
+	}
+	// Every suffix is taken: let `agent.start` say so rather than inventing one.
+	return first;
+}
+
+/** The names herdr currently reports, or none when the snapshot cannot be read. */
+async function takenAgentNames(client: HerdrClient): Promise<Set<string>> {
+	const snapshot = await client.snapshot();
+	if (!snapshot.ok) return new Set();
+	return new Set(snapshot.value.agents.flatMap((agent) => (typeof agent.name === "string" ? [agent.name] : [])));
 }
 
 async function headOf(run: CommandRunner, cwd: string): Promise<string | undefined> {

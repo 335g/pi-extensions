@@ -1022,6 +1022,224 @@ else
 	fail "the merge removed the worktree"
 fi
 
+# ---------------------------------------------------------------- 17. clean (command)
+
+# Merging leaves the worktree in place, so the loop needs a cleanup of its own.
+# The command path is checked on a branch that is NOT merged: the gate has to
+# refuse it, `--force` has to override, and a second run has to be a no-op. The
+# run record and the observer's session have to survive all of it.
+
+say "17. /fleet clean: unmerged refusal, --force, and idempotence"
+UNCLEAN_BRANCH="$PREFIX/unclean"
+herdr pane send-text "$OBSERVER" "/fleet worktree create $UNCLEAN_BRANCH --label unclean-$$" >/dev/null 2>&1
+sleep 0.7
+herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1
+deadline=$((SECONDS + 180))
+while [ "$SECONDS" -lt "$deadline" ] && [ -z "$(worktree_field "$UNCLEAN_BRANCH" path)" ]; do sleep 1; done
+UNCLEAN_PATH="$(worktree_field "$UNCLEAN_BRANCH" path)"
+UNCLEAN_WS="$(worktree_field "$UNCLEAN_BRANCH" open_workspace_id)"
+register_worktree "$UNCLEAN_WS" "$UNCLEAN_PATH"
+if [ -n "$UNCLEAN_PATH" ]; then
+	ok "a worktree was created for the cleanup test ($UNCLEAN_PATH)"
+else
+	fail "the cleanup test's worktree was not created"
+fi
+
+# A commit that is not in main, so the branch is genuinely unmerged.
+printf 'UNCLEAN\n' >"$UNCLEAN_PATH/unclean-marker.txt"
+git -C "$UNCLEAN_PATH" add unclean-marker.txt
+git -C "$UNCLEAN_PATH" -c user.email=fleet@accept -c user.name=fleet commit -qm "unclean work"
+
+# The recorded pane is a split pane, like the one `prepareWorktree` opens. Closing
+# the workspace's own root pane would take the workspace with it and leave the
+# checkout for `git branch -d` to trip over.
+UNCLEAN_ROOT="$(pane_in_workspace "$UNCLEAN_WS")"
+if split_pane "$UNCLEAN_ROOT" right "$UNCLEAN_PATH"; then
+	UNCLEAN_PANE="$FLEET_NEW_PANE"
+	ok "a pane was split for the cleanup test ($UNCLEAN_PANE)"
+else
+	fail "could not split a pane for the cleanup test"
+fi
+
+# The record is written by hand: this branch was not forked, and the cleanup only
+# needs what a fork would have written.
+UNCLEAN_RUN="$(run_file "$UNCLEAN_BRANCH")"
+mkdir -p "$(dirname "$UNCLEAN_RUN")"
+python3 - "$UNCLEAN_RUN" "$UNCLEAN_BRANCH" "$UNCLEAN_PATH" "$UNCLEAN_WS" "$UNCLEAN_PANE" <<'PY'
+import json, sys
+record = {
+    "branch": sys.argv[2],
+    "path": sys.argv[3],
+    "workspaceId": sys.argv[4],
+    "paneId": sys.argv[5],
+    "scope": "implementation",
+    "task": "unclean work",
+    "createdAt": "2020-01-01T00:00:00.000Z",
+}
+json.dump(record, open(sys.argv[1], "w"), indent=2)
+PY
+if [ -f "$UNCLEAN_RUN" ]; then
+	ok "a run record with no merge is on disk for the cleanup test"
+else
+	fail "no run record was written for $UNCLEAN_BRANCH"
+fi
+
+clean() { # clean <branch> [flags]
+	herdr pane send-text "$OBSERVER" "/fleet clean $1 $2" >/dev/null 2>&1
+	sleep 0.7
+	herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1
+}
+
+# No merge, no force: refused, and nothing may be removed.
+clean "$UNCLEAN_BRANCH" ""
+UNCLEAN_REFUSED=""
+deadline=$((SECONDS + 60))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	UNCLEAN_REFUSED="$(history "$OBSERVER")"
+	printf '%s' "$UNCLEAN_REFUSED" | grep -q 'has not been merged' && break
+	sleep 1
+done
+check "clean refuses an unmerged run" 'clean: .*has not been merged' "$UNCLEAN_REFUSED"
+observed "clean refusal" 'clean: .*has not been merged.*' "$UNCLEAN_REFUSED"
+if [ -d "$UNCLEAN_PATH" ] && git -C "$REPO" show-ref --verify --quiet "refs/heads/$UNCLEAN_BRANCH"; then
+	ok "the refused clean left the worktree and the branch alone"
+else
+	fail "the refused clean removed something"
+fi
+if [ -n "$UNCLEAN_PANE" ] && herdr pane get "$UNCLEAN_PANE" >/dev/null 2>&1; then
+	ok "the refused clean left the recorded pane open"
+else
+	fail "the refused clean closed the recorded pane"
+fi
+
+# --force overrides the merge check, and removes the worktree, the branch and the
+# recorded pane. The record stays, with cleanedAt.
+clean "$UNCLEAN_BRANCH" "--force"
+UNCLEAN_DONE=""
+deadline=$((SECONDS + 120))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	UNCLEAN_DONE="$(history "$OBSERVER")"
+	printf '%s' "$UNCLEAN_DONE" | grep -qE "clean $UNCLEAN_BRANCH 完了|Cleaned $UNCLEAN_BRANCH" && break
+	sleep 1
+done
+check "clean --force runs on an unmerged run" "clean $UNCLEAN_BRANCH 完了|Cleaned $UNCLEAN_BRANCH" "$UNCLEAN_DONE"
+if [ -d "$UNCLEAN_PATH" ]; then
+	fail "clean --force left the worktree"
+else
+	ok "clean --force removed the worktree"
+fi
+if git -C "$REPO" show-ref --verify --quiet "refs/heads/$UNCLEAN_BRANCH"; then
+	fail "clean --force left the branch"
+else
+	ok "clean --force deleted the branch"
+fi
+if [ -n "$UNCLEAN_PANE" ] && herdr pane get "$UNCLEAN_PANE" >/dev/null 2>&1; then
+	fail "clean --force left the recorded pane open"
+else
+	ok "clean --force closed the recorded pane"
+fi
+check "the run record survived the cleanup" "\"branch\": \"$UNCLEAN_BRANCH\"" "$(cat "$UNCLEAN_RUN" 2>/dev/null)"
+check "the run record gained cleanedAt" '"cleanedAt":' "$(cat "$UNCLEAN_RUN" 2>/dev/null)"
+
+# Idempotent: everything is already gone, and a second clean is still not an error.
+# The evidence is the record, not a toast: `cleanRun` writes `cleanedAt` only after
+# every step has returned, so a changed timestamp proves the second run reached the
+# end without refusing.
+BEFORE_CLEANED="$(run_field "$UNCLEAN_BRANCH" cleanedAt)"
+clean "$UNCLEAN_BRANCH" ""
+AFTER_CLEANED=""
+deadline=$((SECONDS + 120))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	AFTER_CLEANED="$(run_field "$UNCLEAN_BRANCH" cleanedAt)"
+	[ -n "$AFTER_CLEANED" ] && [ "$AFTER_CLEANED" != "$BEFORE_CLEANED" ] && break
+	sleep 1
+done
+if [ -n "$AFTER_CLEANED" ] && [ "$AFTER_CLEANED" != "$BEFORE_CLEANED" ]; then
+	ok "a second clean is not an error"
+else
+	fail "a second clean did not complete (cleanedAt stayed $BEFORE_CLEANED)"
+fi
+if [ -z "$(worktree_field "$UNCLEAN_BRANCH" path)" ]; then
+	ok "a second clean left the worktree gone"
+else
+	fail "a second clean restored the worktree"
+fi
+
+# ---------------------------------------------------------------- 18. clean (tool)
+
+# The tool is the path an agent drives. `mergedAt` is removed from the record
+# first, so the gate has to fall back to `git merge-base --is-ancestor`: a branch
+# merged by hand is cleanable too. The record and the author's session JSONL are
+# what must survive.
+
+say "18. fleet_clean as a tool: the git fallback and the surviving session"
+python3 - "$(run_file "$TOOL_GATE_BRANCH")" <<'PY'
+import json, sys
+record = json.load(open(sys.argv[1]))
+record.pop("mergedAt", None)
+json.dump(record, open(sys.argv[1], "w"), indent=2)
+PY
+GATE_AUTHOR_SESSION="$(pane_session "$GATE_PANE")"
+ask "Call the fleet_clean tool exactly once with branch \"$TOOL_GATE_BRANCH\". Then stop."
+TOOL_CLEANED=""
+deadline=$((SECONDS + 240))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	if grep -aq "cleaned $TOOL_GATE_BRANCH" "$OBSERVER_SESSION" 2>/dev/null; then TOOL_CLEANED="yes"; break; fi
+	sleep 1
+done
+if [ -n "$TOOL_CLEANED" ]; then
+	ok "the agent's fleet_clean call ran"
+else
+	fail "the agent's fleet_clean call did not run"
+	dump_pane "$OBSERVER" 20
+fi
+if [ -d "$GATE_PATH" ]; then
+	fail "the tool clean left the worktree"
+else
+	ok "the tool clean removed the worktree"
+fi
+if git -C "$REPO" show-ref --verify --quiet "refs/heads/$TOOL_GATE_BRANCH"; then
+	fail "the tool clean left the branch"
+else
+	ok "the tool clean deleted the branch"
+fi
+check "the tool clean kept the run record" "\"branch\": \"$TOOL_GATE_BRANCH\"" "$(cat "$(run_file "$TOOL_GATE_BRANCH")" 2>/dev/null)"
+check "the tool clean recorded cleanedAt" '"cleanedAt":' "$(cat "$(run_file "$TOOL_GATE_BRANCH")" 2>/dev/null)"
+if [ -n "$GATE_AUTHOR_SESSION" ] && [ -f "$GATE_AUTHOR_SESSION" ]; then
+	ok "the cleaned session's JSONL is still on disk"
+else
+	fail "the cleanup deleted the session JSONL ($GATE_AUTHOR_SESSION)"
+fi
+
+# ---------------------------------------------------------------- 19. review twice
+
+# A send-back followed by a re-review is a second `fleet_review` on the same
+# branch. The first reviewer's agent name is still taken, so the second review
+# has to take the next suffix instead of failing `agent.start`.
+
+say "19. a second fleet_review of the same branch"
+ask "Call the fleet_review tool exactly once with branch \"$TOOL_REVIEW_BRANCH\" and task \"$TOOL_REVIEW_TASK\". Then stop."
+SECOND_AGENT=""
+deadline=$((SECONDS + 420))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	SECOND_AGENT="$(run_field "$TOOL_REVIEW_BRANCH" reviewer.agentName)"
+	[ -n "$SECOND_AGENT" ] && [ "$SECOND_AGENT" != "$TOOL_REVIEW_AGENT" ] && break
+	sleep 1
+done
+if [ -n "$SECOND_AGENT" ] && [ "$SECOND_AGENT" != "$TOOL_REVIEW_AGENT" ]; then
+	ok "a second review of the same branch started ($SECOND_AGENT)"
+else
+	fail "the second review did not start (reviewer is still ${SECOND_AGENT:-none})"
+	dump_pane "$OBSERVER" 20
+fi
+check "the second reviewer's name is numbered, not reused" 'review-2$' "$SECOND_AGENT"
+SECOND_PANE="$(run_field "$TOOL_REVIEW_BRANCH" reviewer.paneId)"
+if [ -n "$SECOND_PANE" ] && [ "$SECOND_PANE" != "$TOOL_REVIEW_PANE" ]; then
+	ok "the second reviewer runs in a new pane ($SECOND_PANE)"
+else
+	fail "the second reviewer reused the first reviewer's pane ($SECOND_PANE)"
+fi
+
 # ---------------------------------------------------------------- result
 
 fleet_result

@@ -21,6 +21,7 @@ import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil
 
 import { ApprovalBroker, FleetOverlay, type Strings, strings } from "./approvals.ts";
 import { AuditLog, registerAuditRenderer } from "./audit.ts";
+import { cleanRun, fleetCleanTool } from "./clean.ts";
 import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient } from "./herdr-client.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
@@ -311,6 +312,25 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.notify(t.mergeDone(merged.value.branch, merged.value.output), "info");
 	}
 
+	async function cleanCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
+		const t = strings();
+		const [branch, ...tail] = rest;
+		const { flags } = parseFlags(tail, ["force"]);
+		if (!branch) {
+			ctx.ui.notify(t.cleanUsage, "warning");
+			return;
+		}
+		ctx.ui.notify(t.cleanStarting(branch), "info");
+		const cleaned = await cleanRun(client, run, { cwd: ctx.cwd, branch, force: flags.has("force") });
+		if (!cleaned.ok) {
+			ctx.ui.notify(cleaned.error, "error");
+			return;
+		}
+		const { worktreeRemoved, branchDeleted, panesClosed } = cleaned.value;
+		ctx.ui.notify(t.cleanDone(branch, worktreeRemoved, branchDeleted, panesClosed.length), "info");
+		for (const warning of cleaned.value.warnings) ctx.ui.notify(`${t.fleetWarningPrefix} ${warning}`, "warning");
+	}
+
 	async function worktreeCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
 		const t = strings();
 		const [verb, branch, ...tail] = rest;
@@ -347,6 +367,7 @@ export default function (pi: ExtensionAPI) {
 			if (group === "review") return reviewCommand(rest, ctx);
 			if (group === "status") return statusCommand(ctx);
 			if (group === "merge") return mergeCommand(rest, ctx);
+			if (group === "clean") return cleanCommand(rest, ctx);
 			if (group !== undefined) {
 				ctx.ui.notify(strings().unknownSubcommand(group), "warning");
 				return;
@@ -371,6 +392,7 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool(fleetVerdictTool(client, run, pi));
 		pi.registerTool(fleetStatusTool(run));
 		pi.registerTool(fleetMergeTool(run));
+		pi.registerTool(fleetCleanTool(client, run));
 		broker?.stop();
 		config = readConfig();
 		const t = strings();

@@ -15,11 +15,12 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 
 import { ApprovalBroker, FleetOverlay, strings } from "./approvals.ts";
 import { AuditLog, AUDIT_CUSTOM_TYPE, describe, registerAuditRenderer } from "./audit.ts";
+import { cleanRun, fleetCleanTool } from "./clean.ts";
 import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient, type Outcome, type SubscribeEvent } from "./herdr-client.ts";
 import { tokenize } from "./index.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
-import { fleetReviewTool, readAuthorSession, reviewWorktree } from "./review.ts";
+import { fleetReviewTool, freeAgentName, readAuthorSession, reviewWorktree } from "./review.ts";
 import {
 	type RunRecord,
 	fleetMergeTool,
@@ -29,6 +30,7 @@ import {
 	readRun,
 	runFileName,
 	runState,
+	runsDir,
 	statusRuns,
 	updateRun,
 	writeRun,
@@ -139,6 +141,8 @@ const PANE_SCOPED_TYPES = new Set(["pane.output_matched", "pane.agent_status_cha
 let startFaults: { code: string; message: string }[] = [];
 /** What `worktree.list` reports. Set per test; empty means "no worktrees". */
 let worktreeList: { path: string; branch: string; open_workspace_id: string | null }[] = [];
+/** Set to have `worktree.remove` fail, the way herdr answers a workspace it no longer has. */
+let worktreeRemoveError: { code: string; message: string } | undefined;
 
 const server = net.createServer((socket) => {
 	let buffer = "";
@@ -165,6 +169,7 @@ const server = net.createServer((socket) => {
 					break;
 				case "pane.send_keys":
 				case "pane.send_input":
+				case "pane.close":
 					reply({ result: { type: "ok" } });
 					break;
 				case "boom":
@@ -213,6 +218,10 @@ const server = net.createServer((socket) => {
 							worktree: { path: join(scratch, "checkout"), branch: request.params.branch, label: request.params.label ?? "", is_bare: false, is_detached: false, is_prunable: false, is_linked_worktree: true },
 						},
 					});
+					break;
+				case "worktree.remove":
+					if (worktreeRemoveError) reply({ error: worktreeRemoveError });
+					else reply({ result: { type: "worktree_removed" } });
 					break;
 				case "worktree.list":
 					reply({
@@ -935,6 +944,34 @@ try {
 		reviewStart.params.args?.[0] === "-e" && String(reviewStart.params.args?.[1]).endsWith("index.ts"),
 		`the reviewer must load this extension by path, so fleet_verdict exists even when it is not installed: ${JSON.stringify(reviewStart.params.args)}`,
 	);
+
+	// A send-back is a second review of the same branch, and herdr refuses an
+	// agent name that is already taken. The first reviewer is still in the
+	// snapshot, so the second review has to take the next suffix.
+	assert((await freeAgentName(client, "feat/other", "review")) === "feat-other-review", "a free name is used as it is");
+	snapshot.agents.push({ pane_id: "w1:p10", workspace_id: "w1", agent: "pi", name: "feat-review-review", agent_status: "idle" });
+	snapshot.panes.push({ pane_id: "w1:p10", workspace_id: "w1" });
+	assert((await freeAgentName(client, "feat/review", "review")) === "feat-review-review-2", "a taken name advances to -2");
+	received.length = 0;
+	const again = unwrap(await reviewWorktree(client, run, { cwd: "/repo", branch: "feat/review", task: "TASK-MARKER" }), "second reviewWorktree");
+	assert(again.agent === "feat-review-review-2", `a second review must not reuse the first reviewer's name: ${again.agent}`);
+	assert(
+		received.filter((call) => call.method === "agent.start").at(-1)!.params.name === "feat-review-review-2",
+		"the unique name is the one herdr is asked to start",
+	);
+
+	// A start herdr refuses must not leave the pane it was started in: the pane is
+	// this call's own, and nothing else will ever close it.
+	received.length = 0;
+	startFaults = [{ code: "agent_name_taken", message: "agent name feat-review-review-2 is already used" }];
+	const orphan = await reviewWorktree(client, run, { cwd: "/repo", branch: "feat/review", task: "TASK-MARKER" });
+	assert(!orphan.ok && orphan.error.includes("was closed"), `a failed start must close its pane: ${JSON.stringify(orphan)}`);
+	assert(
+		received.some((call) => call.method === "pane.close" && call.params.pane_id === "w9:p2"),
+		`the orphaned pane must be closed: ${JSON.stringify(received.map((call) => call.method))}`,
+	);
+	startFaults = [];
+
 	// What the reviewer was given, and where its pane landed, is asserted end to
 	// end by `acceptance-fork.sh` §9, which reads the reviewer's own session.
 
@@ -1164,6 +1201,114 @@ try {
 	})();
 	assert(noTui.includes("interactive"), `outside a TUI the verdict tool refuses: ${noTui}`);
 
+	// ---------------------------------------------------------------- clean
+
+	// `fleet_clean` removes what a merged run left behind. The record and the
+	// session are the audit trail and are kept; only the record's `cleanedAt`
+	// says the rest is history. The worktree comes from the record, so a run with
+	// no record cannot be cleaned at all.
+	const cleanMain = mkdtempSync(join(scratch, "clean-main-"));
+	let cleanMerged = false;
+	let cleanBranchExists = true;
+	answer = (command, args) => {
+		if (command !== "git") return { stdout: "", stderr: "", code: 0, killed: false };
+		if (args[0] === "worktree") return { stdout: `worktree ${cleanMain}\nHEAD abc\nbranch refs/heads/main\n\n`, stderr: "", code: 0, killed: false };
+		if (args[0] === "merge-base") return { stdout: "", stderr: "", code: cleanMerged ? 0 : 1, killed: false };
+		if (args[0] === "show-ref") return { stdout: "", stderr: "", code: cleanBranchExists ? 0 : 1, killed: false };
+		return { stdout: "", stderr: "", code: 0, killed: false };
+	};
+	const cleanRecord: RunRecord = {
+		...record,
+		branch: "feat/clean",
+		workspaceId: "w9",
+		paneId: client.selfPaneId(),
+		reviewer: { paneId: "w9:p2", agentName: "feat-clean-review" },
+	};
+	writeRun(cleanMain, cleanRecord);
+
+	// Not merged, no force: refused, and nothing is touched.
+	runs.length = 0;
+	received.length = 0;
+	const notMerged = await cleanRun(client, run, { cwd: cleanMain, branch: "feat/clean" });
+	assert(!notMerged.ok && notMerged.error.includes("has not been merged"), `an unmerged run must be refused: ${JSON.stringify(notMerged)}`);
+	assert(!received.some((call) => call.method === "worktree.remove" || call.method === "pane.close"), "a refused clean must not remove anything");
+	assert(!runs.some((call) => call.command === "git" && call.args[0] === "branch"), "a refused clean must not delete the branch");
+	assert(!(await cleanRun(client, run, { cwd: cleanMain, branch: "feat/no-record" })).ok, "a branch with no run record cannot be cleaned");
+
+	// `force` cleans the unmerged run, and deletes the branch with -D.
+	received.length = 0;
+	const forced = unwrap(await cleanRun(client, run, { cwd: cleanMain, branch: "feat/clean", force: true }), "forced cleanRun");
+	assert(forced.worktreeRemoved && forced.branchDeleted, `force cleans an unmerged run: ${JSON.stringify(forced)}`);
+	const forcedRemove = received.filter((call) => call.method === "worktree.remove").at(-1)!;
+	assert(
+		forcedRemove.params.workspace_id === "w9" && forcedRemove.params.force === true,
+		`the recorded workspace is removed: ${JSON.stringify(forcedRemove.params)}`,
+	);
+	const forcedBranch = runs.filter((call) => call.command === "git" && call.args[0] === "branch").at(-1)!;
+	assert(forcedBranch.args.join(" ") === "branch -D feat/clean", `force deletes with -D: ${forcedBranch.args.join(" ")}`);
+
+	// This session's own pane is never closed; the reviewer's is. The record is
+	// kept and gains `cleanedAt` rather than being deleted.
+	assert(forced.panesClosed.join() === "w9:p2", `only the recorded panes are closed: ${JSON.stringify(forced.panesClosed)}`);
+	assert(!received.some((call) => call.method === "pane.close" && call.params.pane_id === client.selfPaneId()), "clean must not close this session's own pane");
+	assert(readRun(cleanMain, "feat/clean")?.cleanedAt !== undefined, "the record survives and gains cleanedAt");
+	assert(readFileSync(join(runsDir(cleanMain), runFileName("feat/clean")), "utf8").includes('"branch": "feat/clean"'), "the record file is not deleted");
+
+	// Idempotent: a second clean is not an error even though everything is gone.
+	cleanBranchExists = false;
+	worktreeRemoveError = { code: "pane_not_found", message: "workspace w9 not found" };
+	runs.length = 0;
+	received.length = 0;
+	const twice = unwrap(await cleanRun(client, run, { cwd: cleanMain, branch: "feat/clean" }), "idempotent cleanRun");
+	assert(!twice.worktreeRemoved && !twice.branchDeleted, `a second clean finds nothing to remove: ${JSON.stringify(twice)}`);
+	assert(twice.warnings.length > 0, "what was already gone is reported, not hidden");
+	assert(!runs.some((call) => call.command === "git" && call.args[0] === "branch"), "a second clean does not delete the branch again");
+	worktreeRemoveError = undefined;
+
+	// Merged through git, with no `mergedAt`: the `--is-ancestor` fallback is what
+	// opens the gate, so a branch merged by hand is cleanable too.
+	cleanMerged = true;
+	cleanBranchExists = true;
+	writeRun(cleanMain, { ...cleanRecord, branch: "feat/clean-git" });
+	runs.length = 0;
+	const byGit = unwrap(await cleanRun(client, run, { cwd: cleanMain, branch: "feat/clean-git" }), "git-merged cleanRun");
+	assert(byGit.branchDeleted, `an ancestor branch is cleanable without force: ${JSON.stringify(byGit)}`);
+	assert(runs.filter((call) => call.command === "git" && call.args[0] === "branch").at(-1)!.args.join(" ") === "branch -d feat/clean-git", "without force the branch goes with -d");
+
+	// The tool is the path an agent drives; the schema carries the shape.
+	const cleanTool = fleetCleanTool(client, run);
+	const cleanSchema = cleanTool.parameters as any;
+	assert(
+		cleanTool.name === "fleet_clean" && cleanSchema.required.join() === "branch" && cleanSchema.properties.force.type === "boolean",
+		`fleet_clean takes a branch and an optional force: ${JSON.stringify(cleanSchema)}`,
+	);
+	writeRun(cleanMain, { ...cleanRecord, branch: "feat/clean-tool" });
+	cleanMerged = true;
+	const cleanedTool = await cleanTool.execute("c1", { branch: "feat/clean-tool" }, undefined, undefined, { mode: "tui", cwd: cleanMain } as never);
+	assert(
+		(cleanedTool.content[0] as { text: string }).text.includes("cleaned feat/clean-tool") &&
+			(cleanedTool.content[0] as { text: string }).text.includes("gained cleanedAt"),
+		`the tool reports the cleanup and the surviving record: ${JSON.stringify(cleanedTool.content)}`,
+	);
+
+	// The tool reports failure by throwing, and refuses outside a TUI session.
+	writeRun(cleanMain, { ...cleanRecord, branch: "feat/clean-refused" });
+	cleanMerged = false;
+	let cleanRefusal = "";
+	try {
+		await cleanTool.execute("c2", { branch: "feat/clean-refused" }, undefined, undefined, { mode: "tui", cwd: cleanMain } as never);
+	} catch (error) {
+		cleanRefusal = error instanceof Error ? error.message : String(error);
+	}
+	assert(cleanRefusal.includes("has not been merged"), `fleet_clean refuses an unmerged run: ${JSON.stringify(cleanRefusal)}`);
+	let cleanNoTui = "";
+	try {
+		await cleanTool.execute("c3", { branch: "feat/clean-refused" }, undefined, undefined, { mode: "print", cwd: cleanMain } as never);
+	} catch (error) {
+		cleanNoTui = error instanceof Error ? error.message : String(error);
+	}
+	assert(cleanNoTui.includes("interactive"), `outside a TUI the clean tool refuses: ${cleanNoTui}`);
+
 	// ------------------------------------------------------------ registration guard
 
 	const registered = (env: Record<string, string | undefined>) => {
@@ -1212,7 +1357,7 @@ try {
 		process.env = saved;
 		return names.join();
 	};
-	assert((await toolsIn("tui")) === "fleet_fork,fleet_review,fleet_verdict,fleet_status,fleet_merge", "an interactive session must register every tool");
+	assert((await toolsIn("tui")) === "fleet_fork,fleet_review,fleet_verdict,fleet_status,fleet_merge,fleet_clean", "an interactive session must register every tool");
 	assert((await toolsIn("print")) === "", "a print session must register no tool");
 
 	console.log("pi-herdr-fleet: ok");

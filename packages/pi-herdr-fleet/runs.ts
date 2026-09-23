@@ -56,6 +56,12 @@ export interface RunRecord {
 	verdict?: { verdict: VerdictKind; findings: Finding[]; at: string };
 	/** Set by `/fleet merge`, so a status line can say it without asking git. */
 	mergedAt?: string;
+	/**
+	 * Set by `fleet_clean`. The record is never deleted — it is the audit trail —
+	 * so this field is the only trace that the worktree, the branch and the panes
+	 * are gone.
+	 */
+	cleanedAt?: string;
 }
 
 /** What `/fleet status` reports, derived from the record and one git question. */

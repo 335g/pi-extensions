@@ -352,6 +352,9 @@ export interface Strings {
 	mergeUsage: string;
 	mergeStarting(branch: string): string;
 	mergeDone(branch: string, output: string): string;
+	cleanUsage: string;
+	cleanStarting(branch: string): string;
+	cleanDone(branch: string, worktree: boolean, branchDeleted: boolean, panes: number): string;
 	verdictRecorded(branch: string, verdict: string, findings: number): string;
 	notACheckout: string;
 }
@@ -404,6 +407,10 @@ const JA: Strings = {
 	mergeUsage: "使い方: /fleet merge <branch> [--force]",
 	mergeStarting: (branch) => `merge ${branch} を実行中…`,
 	mergeDone: (branch, output) => `merge ${branch} 完了${output ? ` — ${output}` : ""}`,
+	cleanUsage: "使い方: /fleet clean <branch> [--force]",
+	cleanStarting: (branch) => `clean ${branch} を実行中…`,
+	cleanDone: (branch, worktree, branchDeleted, panes) =>
+		`clean ${branch} 完了（worktree ${worktree ? "削除" : "なし"} · branch ${branchDeleted ? "削除" : "なし"} · pane ${panes}）`,
 	verdictRecorded: (branch, verdict, findings) => `verdict ${branch} を記録しました（${verdict} · findings ${findings}）`,
 	notACheckout: "fleet: git のチェックアウトの中ではありません",
 };
@@ -456,6 +463,10 @@ const EN: Strings = {
 	mergeUsage: "Usage: /fleet merge <branch> [--force]",
 	mergeStarting: (branch) => `Merging ${branch}...`,
 	mergeDone: (branch, output) => `Merged ${branch}${output ? ` — ${output}` : ""}`,
+	cleanUsage: "Usage: /fleet clean <branch> [--force]",
+	cleanStarting: (branch) => `Cleaning ${branch}...`,
+	cleanDone: (branch, worktree, branchDeleted, panes) =>
+		`Cleaned ${branch} (worktree ${worktree ? "removed" : "none"} · branch ${branchDeleted ? "deleted" : "none"} · ${panes} panes)`,
 	verdictRecorded: (branch, verdict, findings) => `Recorded ${verdict} for ${branch} (${findings} findings)`,
 	notACheckout: "fleet: not inside a git checkout",
 };

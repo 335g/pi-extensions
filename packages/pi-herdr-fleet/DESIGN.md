@@ -331,6 +331,51 @@ request-changes / マージ済み。**ツールが主、コマンドは薄いラ
 
 ツールの説明には、マージが approve を前提とすること、`force` の意味、worktree が残ることを書く。
 
+#### `fleet_clean` ツールと `/fleet clean <branch> [--force]`
+
+マージは worktree を残すので、その後始末が要る。**ツールが主、コマンドは薄いラッパ**で、どちらも
+`cleanRun(client, run, request)` を呼ぶ。引数は `branch`（必須）と `force`（任意、既定 false）。
+
+対象は run 記録にあるものだけ。記録が無ければ何も消さず拒否する（worktree と pane を引く手が
+記録しか無く、branch だけ消すと worktree が宙に浮く）。
+
+1. **pane** — `paneId` と `reviewer.paneId` を `pane.close` で閉じる。**自分自身の pane は閉じない**
+   （閉じる側のセッションそのもの）。
+2. **worktree** — `worktree.remove` に記録の `workspaceId` を渡す。`force: true` は herdr のもので、
+   ゲートの `force` とは別。マージ済みの worktree にも `node_modules` と `.env` が残っているため。
+3. **branch** — main checkout で `git branch -d`（`force` なら `-D`）。
+4. 記録に `cleanedAt` を書く。
+
+pane を先に閉じるのは順序の都合: `worktree.remove` は workspace ごと閉じるので、後から pane を閉じると
+必ず「無かった」ように見え、正常な後始末が警告だらけになる。
+
+- **マージ済みのときだけ実行する。** 判定は記録の `mergedAt`、または
+  `git merge-base --is-ancestor <branch> HEAD`。`force: true` / `--force` で上書きできる
+- **run 記録もセッション JSONL も消さない。** 記録は「あの worktree はなぜ捨てたのか」を後から引く
+  ための資産で、セッションは `session_search` が索引する。消すと監査ログ（§6）が書きっぱなしになる。
+  記録には `cleanedAt` を足すだけにする
+- 既に消えている worktree / branch / pane はエラーにしない。冪等にしたいので、`cleanedAt` が付いた
+  記録はマージ判定をやり直さない（2 回目の clean が 1 回目が作った状態で失敗しないように）
+- 既に消えているものは警告として返す（エラーではない）。正常な 1 回目の後始末は警告を出さない
+
+ツールの説明には、マージ済みが前提であること、`force` の意味、記録を消さないことを書く。
+
+#### レビュワー名の一意化と、起動失敗時の pane の後始末
+
+同じ branch を 2 回レビューする経路（差し戻し→再レビュー）で実際に踏んだ穴。
+
+- レビュワーの agent 名は `<branch>-review` で固定だった。herdr の agent 名は一度きりなので、
+  2 回目の `agent.start` が `agent name ... is already used` で失敗する。**レビューのたびに一意な名前に
+  する**: `session.snapshot` が返す生きた agent 名を見て、`-review`、`-review-2`、`-review-3` … と採番する。
+  名前は herdr の `[a-z][a-z0-9_-]{0,31}` に収める（`agentName` の切り詰めに任せる）。記録の
+  `reviewer.agentName` は最新のレビュワーを指すよう上書きする
+- その失敗のとき、`fleet_review` は自分が作った pane を 1 枚残していた。**`agent.start` が失敗したら、
+  自分が作った pane を `pane.close` で閉じてからエラーを返す。** 残しても誰も使わないし、閉じる責任は
+  作った側にしか無い
+
+採番は snapshot を読むだけなのでロックではない。同時に 2 つのレビューが同じ名前を選べば、負けた側が
+`agent_name_taken` で失敗し、自分の pane を閉じる。
+
 #### 差し戻し
 
 `request-changes` の findings を実装セッションに送り返す経路を作る。実装セッションが生きていれば
@@ -455,6 +500,7 @@ packages/pi-herdr-fleet/
   runs.ts              実行記録、status / merge の実装とツール、マージゲート
   fork.ts              ツール `fleet_fork` とコマンド `/fleet fork` の共通実装
   review.ts            ツール `fleet_review` とコマンド `/fleet review` の共通実装
+  clean.ts             ツール `fleet_clean` とコマンド `/fleet clean` の共通実装
   selfcheck.ts         fake herdr サーバに対する、fake でしか作れない検査
   acceptance-lib.sh    2 つの acceptance が共有する harness
   acceptance.sh        Phase 1/2 の実 pane 受入試験
@@ -516,4 +562,11 @@ Phase 3 の検証（増分ごとに追記する）:
 - `fleet_status` が実 pane の agent から呼べて run の一覧を返し、`fleet_merge` が approve なしで拒否
   され、approve 後に通ってスクラッチの main checkout に本当にマージすること
   → `acceptance-fork.sh` 16 節（ツール経路。コマンド経路は 11〜13 節）
-- **未検証**: 60000 文字を超える実 diff の切り詰め。4MB を超える実セッション
+- `fleet_clean` が未マージの run を拒否し、`force` で通り、worktree・branch・pane が消えて run 記録と
+  セッション JSONL が残ること、2 回目もエラーにならないこと
+  → `acceptance-fork.sh` 17 節（コマンド経路）と 18 節（ツール経路、`is-ancestor` のフォールバック）。
+  fake 側の分岐は `selfcheck.ts`
+- 同じ branch に `fleet_review` を 2 回呼んで通ること、名前が `-review-2` に進むこと
+  → `acceptance-fork.sh` 19 節。`agent.start` 失敗時に pane を閉じることは `selfcheck.ts`
+- **未検証**: 60000 文字を超える実 diff の切り詰め。4MB を超える実セッション。実 pane での
+  `agent.start` 失敗（名前衝突は snapshot を見て避けるので、`selfcheck.ts` の fake でしか踏んでいない）

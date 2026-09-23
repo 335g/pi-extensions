@@ -24,11 +24,13 @@ import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient } from "./herdr-client.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
 import { fleetReviewTool, reviewWorktree } from "./review.ts";
+import { type RunState, fleetVerdictTool, isMerged, listRuns, mergeRun, runState } from "./runs.ts";
 import {
 	type CommandRunner,
 	type EnvPropagation,
 	type InstallOutcome,
 	createWorktree,
+	mainCheckout,
 } from "./worktree.ts";
 
 interface Config {
@@ -114,6 +116,15 @@ function installSummary(install: InstallOutcome | undefined, t: Strings): string
 	if (!install) return t.forkNoInstall;
 	if (install.ok) return t.forkInstalled(install.command);
 	return t.forkInstallFailed(install.command, install.error ?? "");
+}
+
+/** The five states of §3c, in the reader's language. */
+function stateLabel(state: RunState, t: Strings): string {
+	if (state === "working") return t.stateWorking;
+	if (state === "unreviewed") return t.stateUnreviewed;
+	if (state === "merged") return t.stateMerged;
+	// `approve` and `request-changes` are the verdict names themselves.
+	return state;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -261,6 +272,52 @@ export default function (pi: ExtensionAPI) {
 		for (const warning of reviewed.value.warnings) ctx.ui.notify(`${t.fleetWarningPrefix} ${warning}`, "warning");
 	}
 
+	async function statusCommand(ctx: ExtensionContext): Promise<void> {
+		const t = strings();
+		const main = await mainCheckout(run, ctx.cwd);
+		if (!main) {
+			ctx.ui.notify(t.notACheckout, "error");
+			return;
+		}
+		const records = listRuns(main);
+		if (records.length === 0) {
+			ctx.ui.notify(t.statusNone, "info");
+			return;
+		}
+		// One message rather than one toast per run: the list is the point, and
+		// toasts expire.
+		const lines = [t.statusHeader];
+		for (const record of records) {
+			const merged = await isMerged(run, main, record.branch);
+			lines.push(
+				t.statusLine({
+					branch: record.branch,
+					scope: record.scope,
+					state: stateLabel(runState(record, merged), t),
+					verdict: record.verdict?.verdict ?? "-",
+				}),
+			);
+		}
+		ctx.ui.notify(lines.join("\n"), "info");
+	}
+
+	async function mergeCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
+		const t = strings();
+		const [branch, ...tail] = rest;
+		const { flags } = parseFlags(tail, ["force"]);
+		if (!branch) {
+			ctx.ui.notify(t.mergeUsage, "warning");
+			return;
+		}
+		ctx.ui.notify(t.mergeStarting(branch), "info");
+		const merged = await mergeRun(run, { cwd: ctx.cwd, branch, force: flags.has("force") });
+		if (!merged.ok) {
+			ctx.ui.notify(merged.error, "error");
+			return;
+		}
+		ctx.ui.notify(t.mergeDone(merged.value.branch, merged.value.output), "info");
+	}
+
 	async function worktreeCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
 		const t = strings();
 		const [verb, branch, ...tail] = rest;
@@ -295,6 +352,8 @@ export default function (pi: ExtensionAPI) {
 			if (group === "worktree") return worktreeCommand(rest, ctx);
 			if (group === "fork") return forkCommand(rest, ctx);
 			if (group === "review") return reviewCommand(rest, ctx);
+			if (group === "status") return statusCommand(ctx);
+			if (group === "merge") return mergeCommand(rest, ctx);
 			if (group !== undefined) {
 				ctx.ui.notify(strings().unknownSubcommand(group), "warning");
 				return;
@@ -316,6 +375,7 @@ export default function (pi: ExtensionAPI) {
 		// the same guard as everything else: inside herdr, in an interactive session.
 		pi.registerTool(fleetForkTool(client, run));
 		pi.registerTool(fleetReviewTool(client, run));
+		pi.registerTool(fleetVerdictTool(client, run, pi));
 		broker?.stop();
 		config = readConfig();
 		const t = strings();

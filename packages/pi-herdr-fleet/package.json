@@ -23,6 +23,7 @@
     "recipes.ts",
     "worktree.ts",
     "scopes.ts",
+    "runs.ts",
     "fork.ts",
     "review.ts"
   ],

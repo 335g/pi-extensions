@@ -20,13 +20,25 @@
  */
 
 import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { type HerdrClient, type Outcome, err, ok } from "./herdr-client.ts";
+import { type RunRecord, readRun, writeRun } from "./runs.ts";
 import { findScope } from "./scopes.ts";
-import { type CommandRunner, agentName, prepareWorktree, startAgent } from "./worktree.ts";
+import { type CommandRunner, agentName, mainCheckout, prepareWorktree, sendSeed, startAgent } from "./worktree.ts";
+
+/**
+ * This extension's own entry point, taken from where this file is loaded from.
+ *
+ * The reviewer is started with `-e <this>` for two reasons: the installed path
+ * may point at an older build in the main checkout, and there may be no
+ * installed path at all. Either way the reviewer has to load the code that is
+ * running here, or `fleet_verdict` is not in its tool list.
+ */
+const ENTRY = fileURLToPath(new URL("./index.ts", import.meta.url));
 
 export interface ReviewRequest {
 	/** The directory the calling session is in: any checkout of the repository. */
@@ -207,7 +219,13 @@ export async function reviewWorktree(
 	const scope = findScope("review");
 	if (!scope) return err("review: this build has no review scope");
 
-	const located = await locate(client, run, { cwd: request.cwd, branch, base: request.base });
+	// The run record is where the fork point was written down, so a review of a
+	// forked branch diffs against the fork's own base by default. Without it, a
+	// nested fork would drag the parent branch's changes into the diff.
+	const main = await mainCheckout(run, request.cwd);
+	const record = main ? readRun(main, branch) : undefined;
+
+	const located = await locate(client, run, { cwd: request.cwd, branch, base: request.base ?? record?.base });
 	if (!located.ok) return located;
 	const { authorPaneId, authorSession, base, path, targetPaneId, workspaceId } = located.value;
 	const warnings = [...located.value.warnings];
@@ -247,14 +265,37 @@ export async function reviewWorktree(
 	if (!prepared.ok) return err(`review: ${prepared.error} (the review is of what is already at ${path})`);
 
 	const agent = agentName(branch, "review");
-	const started = await startAgent(client, { paneId: prepared.value.paneId, name: agent });
+	const started = await startAgent(client, { paneId: prepared.value.paneId, name: agent, args: ["-e", ENTRY] });
 	if (!started.ok) return err(`review: ${started.error} (the pane is ${prepared.value.paneId})`);
 
-	const sent = await client.paneSendInput(
+	const sent = await sendSeed(
+		client,
 		prepared.value.paneId,
 		scope.seed({ task, path, branch, base, diff: diffText, author: author?.text, authorSession }),
 	);
 	if (!sent.ok) return err(`review: ${sent.error} (the reviewer's pane is ${prepared.value.paneId})`);
+
+	// The record is what `fleet_verdict` checks the calling pane against, so the
+	// reviewer has to be in it before it can answer.
+	if (main) {
+		const sessionPath = await sessionOf(client, prepared.value.paneId);
+		const next: RunRecord = {
+			...(record ?? {}),
+			branch,
+			base,
+			path,
+			workspaceId,
+			scope: record?.scope ?? "implementation",
+			task: record?.task ?? task,
+			createdAt: record?.createdAt ?? new Date().toISOString(),
+			reviewer: { paneId: prepared.value.paneId, agentName: agent, ...(sessionPath ? { sessionPath } : {}) },
+		};
+		try {
+			writeRun(main, next);
+		} catch (error) {
+			warnings.push(`the run record could not be written: ${describe(error)}`);
+		}
+	}
 
 	return ok({
 		path,
@@ -347,6 +388,14 @@ async function anyPaneIn(client: HerdrClient, workspaceId: string): Promise<stri
 	return snapshot.value.panes.find((pane) => pane.workspace_id === workspaceId)?.pane_id;
 }
 
+/** The session herdr knows for a pane, when it knows one yet. */
+async function sessionOf(client: HerdrClient, paneId: string): Promise<string | undefined> {
+	const snapshot = await client.snapshot();
+	if (!snapshot.ok) return undefined;
+	const value = snapshot.value.agents.find((agent) => agent.pane_id === paneId)?.agent_session?.value;
+	return typeof value === "string" ? value : undefined;
+}
+
 async function headOf(run: CommandRunner, cwd: string): Promise<string | undefined> {
 	const head = await git(run, ["rev-parse", "HEAD"], cwd);
 	return head.code === 0 ? head.stdout.trim() : undefined;
@@ -417,6 +466,6 @@ function report(reviewed: ReviewedWorktree): string {
 	];
 	if (!reviewed.authorSession) lines.push("no author session was found");
 	for (const warning of reviewed.warnings) lines.push(`warning: ${warning}`);
-	lines.push("the reviewer answers with VERDICT: approve | request-changes; it does not modify the worktree");
+	lines.push("the reviewer records its verdict with the fleet_verdict tool; it does not modify the worktree");
 	return lines.join("\n");
 }

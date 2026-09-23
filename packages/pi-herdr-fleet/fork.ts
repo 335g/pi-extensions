@@ -15,6 +15,7 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { type HerdrClient, type Outcome, err, ok } from "./herdr-client.ts";
+import { type RunRecord, writeRun } from "./runs.ts";
 import { findScope, forkScopeIds, scopeIds } from "./scopes.ts";
 import {
 	type CommandRunner,
@@ -22,7 +23,9 @@ import {
 	type InstallOutcome,
 	agentName,
 	createWorktree,
+	mainCheckout,
 	prepareWorktree,
+	sendSeed,
 	startAgent,
 } from "./worktree.ts";
 
@@ -45,6 +48,8 @@ export interface ForkedWorktree {
 	path: string;
 	branch: string;
 	workspaceId: string;
+	/** The ref the branch was cut from, once it is known. */
+	base?: string;
 	/** The session that was started, when `start` was true. */
 	session?: { paneId: string; agent: string };
 	/** Absent when nothing needed installing, or installation was skipped. */
@@ -83,9 +88,38 @@ export async function forkWorktree(
 	// Everything past this point has to say that the checkout is already there,
 	// because it is: a failed fork leaves a worktree behind.
 	const afterCreate = (error: string) => `fork: ${error} (the worktree at ${path} was created)`;
-	const forked: ForkedWorktree = { path, branch: created.value.branch ?? branch, workspaceId, env, warnings };
+	const forked: ForkedWorktree = { path, branch: created.value.branch ?? branch, workspaceId, base: created.value.base, env, warnings };
+	// The run record is the only state 3c keeps: it is what a review updates and
+	// what the merge gate reads. Failing to write it is a warning, not a failed
+	// fork — the worktree and the session are already real.
+	const recordRun = async (): Promise<void> => {
+		const main = await mainCheckout(run, request.cwd);
+		if (!main) {
+			forked.warnings.push("the run record could not be written: no main checkout was found");
+			return;
+		}
+		const record: RunRecord = {
+			branch: forked.branch,
+			base: forked.base,
+			path,
+			workspaceId,
+			paneId: forked.session?.paneId,
+			agentName: forked.session?.agent,
+			scope: scope.id,
+			task,
+			createdAt: new Date().toISOString(),
+		};
+		try {
+			writeRun(main, record);
+		} catch (error) {
+			forked.warnings.push(`the run record could not be written: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	};
 
-	if (request.start === false) return ok(forked);
+	if (request.start === false) {
+		await recordRun();
+		return ok(forked);
+	}
 
 	const prepared = await prepareWorktree(client, {
 		path,
@@ -102,10 +136,11 @@ export async function forkWorktree(
 	const started = await startAgent(client, { paneId, name: agent });
 	if (!started.ok) return err(afterCreate(started.error));
 
-	const sent = await client.paneSendInput(paneId, scope.seed({ task, path, branch: forked.branch, base }));
+	const sent = await sendSeed(client, paneId, scope.seed({ task, path, branch: forked.branch, base }));
 	if (!sent.ok) return err(afterCreate(sent.error));
 	forked.session = { paneId, agent };
 
+	await recordRun();
 	return ok(forked);
 }
 

@@ -112,12 +112,7 @@ const review: Scope = {
 			"# Done",
 			"",
 			`- The deliverable is ${REVIEW_DELIVERABLE}.`,
-			"- End your reply with exactly this, and nothing after it:",
-			"",
-			"VERDICT: approve | request-changes",
-			"FINDINGS:",
-			"- <path>:<line> <what is wrong>",
-			"",
+			"- Finish by calling the `fleet_verdict` tool: `verdict` is `approve` or `request-changes`, and `findings` is one entry per problem (`path`, optional `line`, `note`). The merge gate reads that call and nothing else, so the review is not finished until it has been made.",
 			"- Use `approve` only when you found nothing worth changing. An empty diff is not a pass: say so and request changes.",
 		].join("\n"),
 };

@@ -19,6 +19,16 @@ import { HerdrClient, type Outcome, type SubscribeEvent } from "./herdr-client.t
 import { tokenize } from "./index.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
 import { fleetReviewTool, readAuthorSession, reviewWorktree } from "./review.ts";
+import {
+	type RunRecord,
+	fleetVerdictTool,
+	mergeRun,
+	readRun,
+	runFileName,
+	runState,
+	updateRun,
+	writeRun,
+} from "./runs.ts";
 import { findScope, forkScopeIds, scopeIds } from "./scopes.ts";
 import {
 	type CommandResult,
@@ -530,8 +540,8 @@ try {
 	}
 	assert(reviewSeedText.includes("read-only") || reviewSeedText.includes("Do not modify"), "the reviewer is told to leave the worktree alone");
 	assert(
-		reviewSeedText.includes("VERDICT: approve | request-changes") && reviewSeedText.includes(reviewScope.deliverable),
-		"the verdict shape is fixed in the seed, because 3c has no tool to read yet",
+		reviewSeedText.includes("fleet_verdict") && reviewSeedText.includes(reviewScope.deliverable),
+		"the verdict is a tool call, fixed in the seed",
 	);
 	const bareReview = reviewScope.seed({ task: "T", path: "/wt", branch: "b" });
 	assert(bareReview.includes("(the diff is empty)"), "a review with no material says so instead of looking empty");
@@ -646,6 +656,17 @@ try {
 	startFaults = [];
 	waitText = "FLEET_INSTALL_1=0\n";
 	writeFileSync(join(scratch, "checkout", "package-lock.json"), "{}");
+	// The fork writes its run record into the main checkout, so this one answers
+	// git as well as direnv. Everything else about the call is unchanged.
+	const direnvAnswer = answer;
+	answer = (command, args) => {
+		if (command !== "git") return direnvAnswer(command, args);
+		const git: CommandResult = { stdout: "", stderr: "", code: 0, killed: false };
+		if (args[0] === "worktree") return { ...git, stdout: `worktree ${dirs.source}\n\n` };
+		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { ...git, stdout: `${dirs.source}\n` };
+		if (args[0] === "rev-parse") return { ...git, stdout: `${"a".repeat(40)}\n` };
+		return git;
+	};
 	const forked = await tool.execute(
 		"call-1",
 		{ branch: "feat/tool", task: "TOOL-MARKER" },
@@ -730,13 +751,14 @@ try {
 	answer = gitAnswer({
 		"worktree list --porcelain": `worktree ${mainPath}\nHEAD ${pinned}\nbranch refs/heads/main\n\n`,
 		"rev-parse --show-toplevel": `${mainPath}\n`,
+		"rev-parse": `${pinned}\n`,
 	});
 	received.length = 0;
 	const inPlace = unwrap(await createWorktree(client, run, { cwd: mainPath, branch: "feat/plain", base: "main" }), "createWorktree in the main checkout");
 	const plainCall = received.filter((call) => call.method === "worktree.create").at(-1)!;
 	assert(
-		plainCall.params.cwd === mainPath && plainCall.params.base === "main" && inPlace.warnings.length === 0,
-		`the main checkout is passed through untouched: ${JSON.stringify(plainCall.params)}`,
+		plainCall.params.cwd === mainPath && plainCall.params.base === pinned && inPlace.warnings.length === 0,
+		`the main checkout is passed through with its fork point pinned to a commit: ${JSON.stringify(plainCall.params)}`,
 	);
 
 	// ------------------------------------------------------------ author session
@@ -804,8 +826,12 @@ try {
 	);
 	const reviewStart = received.filter((call) => call.method === "agent.start").at(-1)!;
 	assert(reviewStart.params.name === "feat-review-review", `the reviewer needs its own agent name: ${JSON.stringify(reviewStart.params)}`);
+	assert(
+		reviewStart.params.args?.[0] === "-e" && String(reviewStart.params.args?.[1]).endsWith("index.ts"),
+		`the reviewer must load this extension by path, so fleet_verdict exists even when it is not installed: ${JSON.stringify(reviewStart.params.args)}`,
+	);
 	const reviewSeed = received.filter((call) => call.method === "pane.send_input").at(-1)!.params.text as string;
-	for (const material of ["TASK-MARKER", "DIFF-MARKER", "THIRD", "/repo/wt", "VERDICT: approve | request-changes"]) {
+	for (const material of ["TASK-MARKER", "DIFF-MARKER", "THIRD", "/repo/wt", "fleet_verdict"]) {
 		assert(reviewSeed.includes(material), `the seed must carry the review material (${material}): ${reviewSeed.slice(0, 400)}`);
 	}
 	assert(!reviewSeed.includes("SEED-MARKER"), "the author's seed is not the author's report");
@@ -836,6 +862,161 @@ try {
 		`branch and task must be required: ${JSON.stringify((reviewTool.parameters as any).required)}`,
 	);
 	assert(findScope("review") !== undefined && !forkScopeIds().includes("review"), "review is a scope, but not one a fork can be asked for");
+
+	// ------------------------------------------------------------ run records
+
+	const runMain = mkdtempSync(join(scratch, "runs-main-"));
+	assert(runFileName("feat/x-y") === "feat-x-y.json", `a branch becomes a file name: ${runFileName("feat/x-y")}`);
+	const record: RunRecord = {
+		branch: "feat/record",
+		base: "abc",
+		path: "/wt",
+		workspaceId: "w9",
+		paneId: "w1:p2",
+		agentName: "feat-record",
+		scope: "implementation",
+		task: "TASK",
+		createdAt: "2020-01-01T00:00:00.000Z",
+	};
+	writeRun(runMain, record);
+	assert(readRun(runMain, "feat/record")?.task === "TASK", "a run must round-trip through its file");
+	assert(readRun(runMain, "feat/other") === undefined, "a branch with no record reads as nothing");
+	assert(
+		runState(record, false) === "working" &&
+			runState({ ...record, reviewer: { paneId: "w9:p2", agentName: "x" } }, false) === "unreviewed" &&
+			runState({ ...record, verdict: { verdict: "approve", findings: [], at: "now" } }, false) === "approve" &&
+			runState({ ...record, verdict: { verdict: "request-changes", findings: [], at: "now" } }, false) === "request-changes" &&
+			runState(record, true) === "merged",
+		"the state follows the reviewer, the verdict and the merge",
+	);
+
+	// ------------------------------------------------------------- merge gate
+
+	const gateMain = mkdtempSync(join(scratch, "gate-main-"));
+	const gateGit = (extra: Record<string, string> = {}) =>
+		gitAnswer({ "worktree list --porcelain": `worktree ${gateMain}\nHEAD abc\nbranch refs/heads/main\n\n`, ...extra });
+
+	answer = gateGit();
+	writeRun(gateMain, { ...record, branch: "feat/gate" });
+	runs.length = 0;
+	const noVerdict = await mergeRun(run, { cwd: gateMain, branch: "feat/gate" });
+	assert(
+		!noVerdict.ok && noVerdict.error.includes("no approve verdict"),
+		`the gate must refuse without an approve: ${JSON.stringify(noVerdict)}`,
+	);
+	assert(!(await mergeRun(run, { cwd: gateMain, branch: "feat/absent" })).ok, "a branch with no record must be refused");
+	assert(!runs.some((call) => call.args[0] === "merge"), "a refused merge must not run git merge");
+
+	updateRun(gateMain, "feat/gate", { verdict: { verdict: "approve", findings: [], at: "now" } });
+	answer = gateGit({ "merge --no-edit feat/gate": "Fast-forward\n" });
+	const merged = unwrap(await mergeRun(run, { cwd: gateMain, branch: "feat/gate" }), "mergeRun");
+	assert(merged.verdict === "approve" && merged.output.includes("Fast-forward"), `an approved branch merges: ${JSON.stringify(merged)}`);
+	assert(readRun(gateMain, "feat/gate")?.mergedAt !== undefined, "a merge is recorded on the run");
+
+	answer = gateGit({ "status --porcelain --untracked-files=no": " M src/x.ts\n" });
+	const dirty = await mergeRun(run, { cwd: gateMain, branch: "feat/gate" });
+	assert(!dirty.ok && dirty.error.includes("uncommitted"), `a dirty checkout must refuse: ${JSON.stringify(dirty)}`);
+	// Untracked files are not dirt: the run records themselves live under `.pi/`,
+	// so a strict check would make the gate refuse its own state forever.
+	assert(
+		runs.some((call) => call.command === "git" && call.args.join(" ") === "status --porcelain --untracked-files=no"),
+		`the gate must ignore untracked files: ${JSON.stringify(runs.map((call) => call.args.join(" ")))}`,
+	);
+
+	updateRun(gateMain, "feat/gate", { verdict: { verdict: "request-changes", findings: [], at: "now" } });
+	answer = gateGit({ "merge --no-edit feat/gate": "" });
+	assert((await mergeRun(run, { cwd: gateMain, branch: "feat/gate", force: true })).ok, "--force overrides a missing approve");
+
+	// ---------------------------------------------------------------- verdict
+
+	const entries: unknown[] = [];
+	const verdictPi = { appendEntry: (type: string, data: unknown) => entries.push({ type, data }) } as never;
+	const verdictTool = fleetVerdictTool(client, run, verdictPi);
+
+	// The extension runs in every session, so the pane check is what keeps a
+	// verdict to the reviewer the run recorded.
+	const strangerMain = mkdtempSync(join(scratch, "verdict-stranger-"));
+	answer = gitAnswer({ "worktree list --porcelain": `worktree ${strangerMain}\n\n` });
+	writeRun(strangerMain, { ...record, branch: "feat/stranger", reviewer: { paneId: "w9:p9", agentName: "other" } });
+	const stranger = await (async () => {
+		try {
+			await verdictTool.execute("v1", { verdict: "approve", findings: [] }, undefined, undefined, { mode: "tui", cwd: strangerMain } as never);
+			return "";
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error);
+		}
+	})();
+	assert(stranger.includes("not the reviewer"), `a non-reviewer pane must be refused: ${stranger}`);
+	assert(readRun(strangerMain, "feat/stranger")?.verdict === undefined, "a refused verdict must not be written");
+
+	const reviewerMain = mkdtempSync(join(scratch, "verdict-reviewer-"));
+	answer = gitAnswer({ "worktree list --porcelain": `worktree ${reviewerMain}\n\n` });
+	writeRun(reviewerMain, {
+		...record,
+		branch: "feat/verdict",
+		reviewer: { paneId: client.selfPaneId(), agentName: "feat-verdict-review" },
+	});
+	const accepted = await verdictTool.execute(
+		"v2",
+		{ verdict: "approve", findings: [] },
+		undefined,
+		undefined,
+		{ mode: "tui", cwd: reviewerMain } as never,
+	);
+	assert((accepted.content[0] as { text: string }).text.includes("recorded approve"), `the tool reports the verdict: ${JSON.stringify(accepted.content)}`);
+	assert(readRun(reviewerMain, "feat/verdict")?.verdict?.verdict === "approve", "the recorded reviewer writes the verdict");
+	assert(entries.length === 1, `the verdict is also a session entry: ${entries.length}`);
+
+	// `request-changes` reaches the author: the findings go to the implementation
+	// pane when it is still alive, and nothing is started when it is gone.
+	received.length = 0;
+	writeRun(reviewerMain, {
+		...record,
+		branch: "feat/sendback",
+		paneId: "w1:p2",
+		reviewer: { paneId: client.selfPaneId(), agentName: "r" },
+	});
+	const sentBack = await verdictTool.execute(
+		"v3",
+		{ verdict: "request-changes", findings: [{ path: "src/a.ts", line: 3, note: "NOPE" }] },
+		undefined,
+		undefined,
+		{ mode: "tui", cwd: reviewerMain } as never,
+	);
+	const delivered = received.filter((call) => call.method === "pane.send_input").at(-1)!;
+	assert(
+		delivered.params.pane_id === "w1:p2" && delivered.params.text.includes("src/a.ts:3") && delivered.params.text.includes("NOPE"),
+		`the findings must reach the author's pane: ${JSON.stringify(delivered.params)}`,
+	);
+	assert((sentBack.content[0] as { text: string }).text.includes("sent to the implementation session"), "the send-back is reported");
+
+	received.length = 0;
+	writeRun(reviewerMain, {
+		...record,
+		branch: "feat/dead",
+		paneId: "w9:dead",
+		reviewer: { paneId: client.selfPaneId(), agentName: "r" },
+	});
+	const dead = await verdictTool.execute(
+		"v4",
+		{ verdict: "request-changes", findings: [{ path: "a", note: "n" }] },
+		undefined,
+		undefined,
+		{ mode: "tui", cwd: reviewerMain } as never,
+	);
+	assert((dead.content[0] as { text: string }).text.includes("is gone"), `a dead author must be reported, not replaced: ${JSON.stringify(dead.content)}`);
+	assert(!received.some((call) => call.method === "pane.send_input"), "a dead author must not be sent to");
+
+	// A verdict outside a TUI session is refused, like the other tools.
+	const noTui = await (async () => {
+		try {
+			await verdictTool.execute("v5", { verdict: "approve", findings: [] }, undefined, undefined, { mode: "print", cwd: reviewerMain } as never);
+			return "";
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error);
+		}
+	})();
+	assert(noTui.includes("interactive"), `outside a TUI the verdict tool refuses: ${noTui}`);
 
 	// ------------------------------------------------------------ registration guard
 
@@ -883,7 +1064,7 @@ try {
 		process.env = saved;
 		return names.join();
 	};
-	assert((await toolsIn("tui")) === "fleet_fork,fleet_review", "an interactive session must register both tools");
+	assert((await toolsIn("tui")) === "fleet_fork,fleet_review,fleet_verdict", "an interactive session must register every tool");
 	assert((await toolsIn("print")) === "", "a print session must register no tool");
 
 	console.log("pi-herdr-fleet: ok");

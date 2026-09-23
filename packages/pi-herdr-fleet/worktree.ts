@@ -64,6 +64,8 @@ export interface CreatedWorktree {
 	/** The workspace's original pane, still a shell at the checkout. */
 	rootPaneId?: string;
 	branch?: string | null;
+	/** The ref the branch was cut from, when it is known. */
+	base?: string;
 	env: EnvPropagation;
 	/** Warnings about the checkout itself, as opposed to its environment. */
 	warnings: string[];
@@ -115,9 +117,22 @@ export async function createWorktree(
 		workspaceId,
 		rootPaneId: typeof rootPaneId === "string" ? rootPaneId : undefined,
 		branch: created.worktree.branch ?? undefined,
+		// The ref actually branched from: for a linked worktree the caller's own
+		// HEAD was pinned to a commit, and that is what a review has to diff against.
+		base: source.value.base ?? options.base,
 		env,
 		warnings: source.value.warnings,
 	});
+}
+
+/**
+ * The main checkout for `cwd`: the first entry of `git worktree list`. herdr
+ * refuses a linked worktree as a worktree source, so callers that need "the
+ * repository" — the run records in §3c — resolve through here.
+ */
+export async function mainCheckout(run: CommandRunner, cwd: string): Promise<string | undefined> {
+	const worktrees = await gitWorktrees(run, cwd);
+	return worktrees?.[0]?.path;
 }
 
 // ------------------------------------------------------- worktree source
@@ -125,7 +140,7 @@ export async function createWorktree(
 interface WorktreeSource {
 	/** What `worktree.create` is given as its `cwd`. */
 	cwd: string;
-	/** The ref to branch from, when the caller's own HEAD has to be pinned. */
+	/** The commit to branch from: always a commit, never a symbolic ref. */
 	base?: string;
 	warnings: string[];
 }
@@ -149,20 +164,23 @@ interface GitWorktree {
  * silently left behind.
  */
 async function resolveSource(run: CommandRunner, cwd: string, base: string | undefined): Promise<Outcome<WorktreeSource>> {
-	const unchanged: WorktreeSource = { cwd, warnings: [] };
 	const worktrees = await gitWorktrees(run, cwd);
 	// Not a repository, or a git too old for `--porcelain`: let herdr report it.
-	if (!worktrees || worktrees.length === 0) return ok(unchanged);
+	if (!worktrees || worktrees.length === 0) return ok({ cwd, warnings: [] });
 
 	const main = worktrees[0]!;
 	const toplevel = await git(run, ["rev-parse", "--show-toplevel"], cwd);
-	if (toplevel.code !== 0 || samePath(toplevel.stdout.trim(), main.path)) return ok(unchanged);
+	const linked = toplevel.code === 0 && !samePath(toplevel.stdout.trim(), main.path);
 
-	// `base` is resolved here, in the caller's checkout, because the main one may
-	// resolve it differently: a bare `HEAD` names each worktree's own commit.
+	// The fork point is resolved to a commit in the caller's own checkout, for
+	// two reasons. `HEAD` names each worktree's own commit, so the main checkout
+	// may resolve it differently; and the commit is what §3c records, so a review
+	// can diff a nested fork against its own fork point instead of the parent's.
 	const pinned = await git(run, ["rev-parse", "--verify", "--quiet", base ?? "HEAD"], cwd);
 	const commit = pinned.stdout.trim();
 	if (pinned.code !== 0 || commit === "") return err(`worktree: cannot resolve ${base ?? "HEAD"} in ${cwd}`);
+
+	if (!linked) return ok({ cwd, base: commit, warnings: [] });
 
 	const warnings = [`created from the main checkout at ${main.path}: herdr cannot branch from a linked worktree`];
 	const status = await git(run, ["status", "--porcelain"], cwd);
@@ -373,7 +391,13 @@ export async function startAgent(client: HerdrClient, options: StartAgentOptions
 		if (attempt > 0) await delay(AGENT_START_RETRY_MS);
 		const started = await client.request(
 			"agent.start",
-			{ name: options.name, kind: "pi", pane_id: options.paneId, timeout_ms: timeoutMs },
+			{
+				name: options.name,
+				kind: "pi",
+				pane_id: options.paneId,
+				...(options.args ? { args: options.args } : {}),
+				timeout_ms: timeoutMs,
+			},
 			timeoutMs + REQUEST_SLACK_MS,
 		);
 		if (started.ok) return waitForAgent(client, options.paneId);
@@ -388,6 +412,12 @@ export async function startAgent(client: HerdrClient, options: StartAgentOptions
 export interface StartAgentOptions {
 	paneId: string;
 	name: string;
+	/**
+	 * Arguments for the agent itself, passed through to the agent's own CLI.
+	 * `fleet_review` uses this to load this extension with `-e`, so the reviewer
+	 * always has `fleet_verdict` even when the extension is not installed.
+	 */
+	args?: string[];
 	timeoutMs?: number;
 }
 
@@ -399,6 +429,41 @@ async function waitForAgent(client: HerdrClient, paneId: string): Promise<Outcom
 	);
 	return waited.ok ? ok(undefined) : waited;
 }
+
+/**
+ * Deliver a seed as one message: the text through `pane.send_input`, then an
+ * Enter, retried until the agent actually starts working.
+ *
+ * A seed is a long, multi-line paste. An Enter sent while the paste is still
+ * being ingested is dropped, and the seed then sits in the editor forever — the
+ * failure the acceptance test catches as "the seed never reached the forked
+ * session". A fixed delay is a guess that a loaded machine breaks, so the
+ * retry waits on herdr's own view of the agent instead: once it is working, the
+ * seed arrived. `blocked` and `done` count too, because an agent that answered
+ * immediately has also received it.
+ */
+export async function sendSeed(client: HerdrClient, paneId: string, text: string): Promise<Outcome<void>> {
+	const typed = await client.paneSendInput(paneId, text, []);
+	if (!typed.ok) return typed;
+	let last = "the seed was typed but the agent never started working";
+	for (let attempt = 0; attempt < SEED_SUBMIT_ATTEMPTS; attempt += 1) {
+		await delay(SEED_SUBMIT_DELAY_MS);
+		const pressed = await client.paneSendKeys(paneId, ["enter"]);
+		if (!pressed.ok) return pressed;
+		const accepted = await client.request(
+			"agent.wait",
+			{ target: paneId, until: ["working", "blocked", "done"], timeout_ms: SEED_ACCEPT_TIMEOUT_MS },
+			SEED_ACCEPT_TIMEOUT_MS + REQUEST_SLACK_MS,
+		);
+		if (accepted.ok) return ok(undefined);
+		last = accepted.error;
+	}
+	return err(last);
+}
+
+const SEED_SUBMIT_ATTEMPTS = 5;
+const SEED_SUBMIT_DELAY_MS = 700;
+const SEED_ACCEPT_TIMEOUT_MS = 4_000;
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));

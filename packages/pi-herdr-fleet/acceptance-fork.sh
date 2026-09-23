@@ -76,12 +76,31 @@ fail() {
 	printf '   FAIL  %s\n' "$1"
 }
 check() { # check <description> <pattern> <text>
-	if printf '%s' "$3" | grep -qE "$2"; then ok "$1"; else fail "$1 (no match for /$2/)"; fi
+	# A here-string, not a pipe: `grep -q` exits on the first match, and under
+	# `pipefail` the SIGPIPE that gives `printf` turns a matching check into a
+	# failure once the sampled text grows past a pipe buffer.
+	if grep -qE "$2" <<<"$3"; then ok "$1"; else fail "$1 (no match for /$2/)"; fi
 }
 
 # `herdr pane read` prints the pane text directly; `recent-unwrapped` keeps the
-# toasts this script asserts on.
-history() { herdr pane read "$1" --source recent-unwrapped --lines 200 2>/dev/null; }
+# toasts this script asserts on. A blocked read is bounded here: the loops below
+# only re-check their deadline between calls, so one that never returns would
+# hang the whole run.
+history() { # history <pane>
+	local file pid watchdog
+	file="$(mktemp)"
+	herdr pane read "$1" --source recent-unwrapped --lines 200 >"$file" 2>/dev/null </dev/null &
+	pid=$!
+	# The watchdog's own fds are closed: a live child holding the command
+	# substitution's stdout open would make `$(history ...)` wait for it.
+	(sleep 20; kill -9 "$pid" 2>/dev/null) </dev/null >/dev/null 2>&1 &
+	watchdog=$!
+	wait "$pid" 2>/dev/null
+	kill "$watchdog" 2>/dev/null
+	wait "$watchdog" 2>/dev/null
+	cat "$file"
+	rm -f "$file"
+}
 
 worktree_field() { # worktree_field <branch> <json field>
 	herdr worktree list --cwd "$REPO" 2>/dev/null | python3 -c '
@@ -118,6 +137,24 @@ want = sys.argv[2] if len(sys.argv) > 2 else ""
 match = next((p for p in panes if p["workspace_id"] == sys.argv[1] and (not want or p.get("agent") == want)), None)
 print((match or {}).get("pane_id", ""))
 ' "$1" "${2:-}"
+}
+
+# The 3c run record: the file the gate reads instead of a live pane.
+run_file() { # run_file <branch>
+	printf '%s/.pi/herdr-fleet/runs/%s.json' "$REPO" "$(printf '%s' "$1" | tr '/' '-')"
+}
+
+run_field() { # run_field <branch> <dotted key>
+	python3 - "$(run_file "$1")" "$2" <<'PY'
+import json, sys
+try:
+    node = json.load(open(sys.argv[1]))
+except Exception:
+    node = {}
+for key in sys.argv[2].split("."):
+    node = node.get(key) if isinstance(node, dict) else None
+print("" if node is None else node)
+PY
 }
 
 # Agent *names* are reported by `agent list`, not by `pane list`: a fork and the
@@ -170,7 +207,7 @@ await_fork() { # await_fork <branch> <yes|no: expect an agent> [pane] -> the sam
 				[ -n "$done_at" ] || done_at=$SECONDS
 			fi
 		fi
-		if [ -n "$done_at" ] && [ $((SECONDS - done_at)) -ge 8 ]; then break; fi
+		if [ -n "$done_at" ] && [ $((SECONDS - done_at)) -ge 25 ]; then break; fi
 		sleep 0.5
 	done
 	printf '%s' "$text"
@@ -374,7 +411,7 @@ fi
 # And the session is working, not just seeded: the task asks for a commit. Wait
 # for the commit to be the one that carries the file, not for any commit at all —
 # the base commit is already there.
-deadline=$((SECONDS + 240))
+deadline=$((SECONDS + 360))
 while [ "$SECONDS" -lt "$deadline" ]; do
 	if git -C "$FULL_PATH" log -1 --name-only --oneline 2>/dev/null | grep -q fork-marker.txt; then break; fi
 	sleep 2
@@ -476,7 +513,7 @@ TOOL_PANE="$(pane_in_workspace "$TOOL_WS" pi)"
 TOOL_SEEN=""
 SESSION_FILE="$(pane_session "$TOOL_PANE")"
 SEEDED=""
-deadline=$((SECONDS + 180))
+deadline=$((SECONDS + 300))
 while [ "$SECONDS" -lt "$deadline" ]; do
 	if grep -q "forked $BRANCH" "$OBSERVER_SESSION" 2>/dev/null; then TOOL_SEEN="yes"; fi
 	if [ -n "$SESSION_FILE" ] && grep -q "TOOLMARKER" "$SESSION_FILE" 2>/dev/null; then SEEDED="yes"; fi
@@ -571,7 +608,7 @@ review "$FULL_BRANCH" "$TASK"
 # has to be.
 REVIEW_AGENT="$PREFIX-full-review"
 REVIEW_PANE=""
-deadline=$((SECONDS + 180))
+deadline=$((SECONDS + 300))
 while [ "$SECONDS" -lt "$deadline" ]; do
 	REVIEW_PANE="$(pane_by_agent_name "$FULL_WS" "$REVIEW_AGENT")"
 	[ -n "$REVIEW_PANE" ] && break
@@ -589,17 +626,17 @@ fi
 # submitted message from text sitting in an editor.
 REVIEW_SESSION=""
 ON_SCREEN=""
-deadline=$((SECONDS + 180))
+deadline=$((SECONDS + 300))
 while [ "$SECONDS" -lt "$deadline" ]; do
 	[ -n "$REVIEW_PANE" ] && REVIEW_SESSION="$(pane_session "$REVIEW_PANE")"
-	[ -n "$REVIEW_SESSION" ] && grep -qF 'VERDICT: approve | request-changes' "$REVIEW_SESSION" 2>/dev/null && break
+	[ -n "$REVIEW_SESSION" ] && grep -qF 'fleet_verdict' "$REVIEW_SESSION" 2>/dev/null && break
 	sleep 1
 done
 ON_SCREEN="$(cat "$REVIEW_SESSION" 2>/dev/null)"
 check "the seed carries the task the author was given" 'fork-marker.txt containing the word FORKED' "$ON_SCREEN"
 check "the seed carries the diff under review" '\+FORKED' "$ON_SCREEN"
 check "the seed carries the branch's worktree" "$FULL_PATH" "$ON_SCREEN"
-check "the seed fixes the verdict shape" 'VERDICT: approve' "$ON_SCREEN"
+check "the seed fixes the verdict as a fleet_verdict call" 'fleet_verdict' "$ON_SCREEN"
 
 # The author's own report is the material no git command produces. A fragment of
 # it inside the reviewer's seed is the proof that the session was read and passed
@@ -612,47 +649,23 @@ else
 	fail "the author's report did not reach the reviewer (fragment: $FRAGMENT)"
 fi
 
-# Whether the reviewer *answered*, not whether the seed told it to: the seed's own
-# "VERDICT: approve | request-changes" is a user message, so the last assistant
-# text is the only place a real verdict can be.
-reviewer_verdict() { # reviewer_verdict <reviewer session> -> the verdict line it ended with
-	python3 - "$1" <<'PY'
-import json, re, sys
-texts = []
-try:
-    handle = open(sys.argv[1])
-except OSError:
-    handle = []
-for line in handle:
-    try:
-        record = json.loads(line)
-    except Exception:
-        continue
-    message = record.get("message") or {}
-    if record.get("type") != "message" or message.get("role") != "assistant":
-        continue
-    for part in message.get("content") or []:
-        if isinstance(part, dict) and part.get("type") == "text" and part.get("text", "").strip():
-            texts.append(part["text"])
-match = re.search(r"^VERDICT:\s*(approve|request-changes)\s*$", texts[-1] if texts else "", re.M)
-print(match.group(0) if match else "")
-PY
-}
-
-# A review that edits the worktree is not a review. The reviewer is left time to
-# answer first, so this is checked against a session that has finished working.
+# Whether the reviewer *answered*, not whether the seed told it to: the verdict
+# is recorded through `fleet_verdict`, so the run's record is the only place a
+# real verdict can be — the seed's own text is a user message, and the reply is prose.
 VERDICT=""
-deadline=$((SECONDS + 300))
+deadline=$((SECONDS + 420))
 while [ "$SECONDS" -lt "$deadline" ]; do
-	VERDICT="$(reviewer_verdict "$REVIEW_SESSION")"
+	VERDICT="$(run_field "$FULL_BRANCH" verdict.verdict)"
 	[ -n "$VERDICT" ] && break
 	sleep 5
 done
 if [ -n "$VERDICT" ]; then
 	ok "the reviewer answers with a verdict ($VERDICT)"
 else
-	fail "the reviewer's last reply has no VERDICT line"
+	fail "the reviewer recorded no verdict through fleet_verdict"
 fi
+# A review that edits the worktree is not a review. The reviewer was given time
+# to answer first, so this is checked against a session that has finished working.
 if [ -z "$(git -C "$FULL_PATH" status --porcelain 2>/dev/null)" ]; then
 	ok "the reviewer left the worktree alone"
 else
@@ -727,6 +740,169 @@ check "the fork says it was created from the main checkout" 'created from the ma
 check "the fork says the uncommitted change stays behind" 'uncommitted changes' "$INNER_TOASTS"
 INNER_PANE="$(pane_in_workspace "$(worktree_field "$INNER_BRANCH" open_workspace_id)" pi)"
 [ -n "$INNER_PANE" ] && ok "the fork started a Pi session as usual ($INNER_PANE)" || fail "no Pi agent in the inner fork's workspace"
+
+# ---------------------------------------------------------------- 11. verdict and merge gate
+
+# 3c: the record is a file, the verdict is a tool call, and the merge gate reads
+# only that. Everything here runs on the scratch repository, and the merge is a
+# real one — into `$REPO`, never into the repository this script lives in.
+
+say "11. run record, /fleet status, and the gate before any verdict"
+GATE_BRANCH="$PREFIX/gate"
+GATE_TASK="Create a file named gate-marker.txt containing the word GATE, then commit it."
+fork "$GATE_BRANCH" "$GATE_TASK" --base HEAD
+await_fork "$GATE_BRANCH" yes >/dev/null
+GATE_PATH="$(worktree_field "$GATE_BRANCH" path)"
+GATE_WS="$(worktree_field "$GATE_BRANCH" open_workspace_id)"
+GATE_PANE="$(pane_in_workspace "$GATE_WS" pi)"
+if [ -n "$GATE_PATH" ] && [ -n "$GATE_PANE" ]; then
+	ok "the gate branch was forked ($GATE_PATH, pane $GATE_PANE)"
+else
+	fail "the gate branch was not forked"
+fi
+
+deadline=$((SECONDS + 300))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	if git -C "$GATE_PATH" log -1 --name-only --oneline 2>/dev/null | grep -q gate-marker.txt; then break; fi
+	sleep 2
+done
+check "the gate branch carries the committed work" 'GATE' "$(cat "$GATE_PATH/gate-marker.txt" 2>/dev/null)"
+
+GATE_RUN="$(run_file "$GATE_BRANCH")"
+if [ -f "$GATE_RUN" ]; then
+	ok "the fork wrote a run record ($GATE_RUN)"
+else
+	fail "the fork wrote no run record"
+fi
+check "the record carries the branch and the scope" "\"branch\": \"$GATE_BRANCH\"" "$(cat "$GATE_RUN" 2>/dev/null)"
+check "the record carries the base the fork used" '"base":' "$(cat "$GATE_RUN" 2>/dev/null)"
+
+# `/fleet status` prints one line per run: branch · scope · state · verdict.
+status() { herdr pane send-text "$OBSERVER" "/fleet status" >/dev/null 2>&1; sleep 0.7; herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1; }
+status
+STATUS_TEXT=""
+deadline=$((SECONDS + 60))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	STATUS_TEXT="$(history "$OBSERVER")"
+	printf '%s' "$STATUS_TEXT" | grep -q "$GATE_BRANCH · implementation" && break
+	sleep 1
+done
+check "status lists the run with its scope" "$GATE_BRANCH · implementation · (作業中|working)" "$STATUS_TEXT"
+printf '   observed: %s\n' "$(printf '%s' "$STATUS_TEXT" | grep -ao "$GATE_BRANCH · implementation · [^\n]*" | tail -1 | cut -c1-200)"
+
+# The gate has to refuse while no verdict exists, and git must not run.
+merge() { herdr pane send-text "$OBSERVER" "/fleet merge $1 $2" >/dev/null 2>&1; sleep 0.7; herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1; }
+merge "$GATE_BRANCH" ""
+REFUSED_TEXT=""
+deadline=$((SECONDS + 60))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	REFUSED_TEXT="$(history "$OBSERVER")"
+	printf '%s' "$REFUSED_TEXT" | grep -q 'no approve verdict' && break
+	sleep 1
+done
+check "the gate refuses a branch with no approve" 'no approve verdict' "$REFUSED_TEXT"
+printf '   observed: %s\n' "$(printf '%s' "$REFUSED_TEXT" | grep -ao 'merge: .*no approve verdict[^\n]*' | tail -1 | cut -c1-200)"
+if git -C "$REPO" log --oneline 2>/dev/null | grep -q 'gate-marker'; then
+	fail "the refused merge still merged"
+else
+	ok "the refused merge left main alone"
+fi
+
+# ---------------------------------------------------------------- 12. reviewer
+
+# The reviewer records its verdict with `fleet_verdict`, which is what the gate
+# reads — and only the pane the run recorded as the reviewer may call it.
+
+say "12. the reviewer's fleet_verdict and the pane check"
+review "$GATE_BRANCH" "$GATE_TASK"
+GATE_REVIEW_PANE=""
+deadline=$((SECONDS + 420))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	GATE_REVIEW_PANE="$(run_field "$GATE_BRANCH" reviewer.paneId)"
+	[ -n "$GATE_REVIEW_PANE" ] && break
+	sleep 1
+done
+if [ -n "$GATE_REVIEW_PANE" ]; then
+	ok "the review started, and the run recorded its reviewer ($GATE_REVIEW_PANE)"
+else
+	fail "the review recorded no reviewer pane"
+	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+fi
+REVIEW_AGENT="$(run_field "$GATE_BRANCH" reviewer.agentName)"
+[ -n "$REVIEW_AGENT" ] && ok "the record names the reviewer's agent ($REVIEW_AGENT)" || fail "the record has no reviewer agent"
+
+# The reviewer is a real model in a real pane: give it time to read, judge and
+# call the tool. The record is the evidence, not the screen.
+VERDICT=""
+deadline=$((SECONDS + 600))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	VERDICT="$(run_field "$GATE_BRANCH" verdict.verdict)"
+	[ -n "$VERDICT" ] && break
+	sleep 5
+done
+if [ -n "$VERDICT" ]; then
+	ok "the reviewer recorded a verdict with fleet_verdict ($VERDICT)"
+else
+	fail "the reviewer never called fleet_verdict"
+	herdr pane read "$GATE_REVIEW_PANE" --source visible --lines 30 2>/dev/null | tail -20
+fi
+
+# The extension is loaded in every session, so the pane check is what keeps a
+# verdict to the reviewer — the observer's own pane must be refused.
+ask "Call the fleet_verdict tool with verdict \"approve\" and findings []. Report the exact error you get, and do not retry."
+STRANGER=""
+deadline=$((SECONDS + 240))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	if grep -aq 'not the reviewer' "$OBSERVER_SESSION" 2>/dev/null; then STRANGER="yes"; break; fi
+	sleep 1
+done
+if [ -n "$STRANGER" ]; then
+	ok "a pane that is not the reviewer is refused a verdict"
+else
+	fail "the observer was allowed to write a verdict"
+	herdr pane read "$OBSERVER" --source visible --lines 30 2>/dev/null | tail -20
+fi
+
+# ---------------------------------------------------------------- 13. the gate opens
+
+# This is the reason the verdict lives in a file: close the reviewer's pane, and
+# the gate still sees the approve. The merge then really happens, in $REPO.
+say "13. the verdict survives the reviewer's pane, and the merge runs"
+if [ "$VERDICT" = "approve" ]; then
+	herdr pane close "$GATE_REVIEW_PANE" >/dev/null 2>&1
+	sleep 3
+	if herdr pane get "$GATE_REVIEW_PANE" >/dev/null 2>&1; then
+		fail "the reviewer's pane is still open"
+	else
+		ok "the reviewer's pane is closed"
+	fi
+	check "the approve is still in the run record" '"verdict": "approve"' "$(cat "$GATE_RUN" 2>/dev/null)"
+
+	merge "$GATE_BRANCH" ""
+	MERGED_TEXT=""
+	deadline=$((SECONDS + 120))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		MERGED_TEXT="$(history "$OBSERVER")"
+		printf '%s' "$MERGED_TEXT" | grep -qE "merge $GATE_BRANCH 完了|Merged $GATE_BRANCH" && break
+		sleep 1
+	done
+	check "the merge runs with the reviewer gone" "merge $GATE_BRANCH 完了|Merged $GATE_BRANCH" "$MERGED_TEXT"
+	printf '   observed: %s\n' "$(printf '%s' "$MERGED_TEXT" | grep -ao "merge $GATE_BRANCH 完了[^\n]*\|Merged $GATE_BRANCH[^\n]*" | tail -1 | cut -c1-200)"
+	check "main now carries the merged work" 'GATE' "$(cat "$REPO/gate-marker.txt" 2>/dev/null)"
+
+	status
+	STATUS_AFTER=""
+	deadline=$((SECONDS + 60))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		STATUS_AFTER="$(history "$OBSERVER")"
+		printf '%s' "$STATUS_AFTER" | grep -qE 'マージ済み|merged' && break
+		sleep 1
+	done
+	check "status shows the run as merged" 'マージ済み|merged' "$STATUS_AFTER"
+	printf '   observed: %s\n' "$(printf '%s' "$STATUS_AFTER" | grep -ao "$GATE_BRANCH · implementation · [^\n]*" | tail -1 | cut -c1-200)"
+else
+	fail "the reviewer did not approve (verdict: ${VERDICT:-none}), so the gate could not be shown to open"
+fi
 
 # ---------------------------------------------------------------- result
 

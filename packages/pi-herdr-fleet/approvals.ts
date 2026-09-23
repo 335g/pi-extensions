@@ -290,6 +290,17 @@ export interface Strings {
 	reviewStarting(branch: string): string;
 	reviewStarted(branch: string, paneId: string, agent: string, material: string): string;
 	reviewMaterial(diff: number, messages: number): string;
+	statusNone: string;
+	statusHeader: string;
+	statusLine(row: { branch: string; scope: string; state: string; verdict: string }): string;
+	stateWorking: string;
+	stateUnreviewed: string;
+	stateMerged: string;
+	mergeUsage: string;
+	mergeStarting(branch: string): string;
+	mergeDone(branch: string, output: string): string;
+	verdictRecorded(branch: string, verdict: string, findings: number): string;
+	notACheckout: string;
 }
 
 const JA: Strings = {
@@ -331,6 +342,17 @@ const JA: Strings = {
 	reviewStarting: (branch) => `review ${branch} を準備中…`,
 	reviewStarted: (branch, paneId, agent, material) => `review ${branch} を開始しました（pane ${paneId} · agent ${agent} · ${material}）`,
 	reviewMaterial: (diff, messages) => `diff ${diff} 文字 · 作者セッション ${messages} 通`,
+	statusNone: "実行記録はまだありません",
+	statusHeader: "branch · scope · 状態 · verdict",
+	statusLine: (row) => `${row.branch} · ${row.scope} · ${row.state} · ${row.verdict}`,
+	stateWorking: "作業中",
+	stateUnreviewed: "未レビュー",
+	stateMerged: "マージ済み",
+	mergeUsage: "使い方: /fleet merge <branch> [--force]",
+	mergeStarting: (branch) => `merge ${branch} を実行中…`,
+	mergeDone: (branch, output) => `merge ${branch} 完了${output ? ` — ${output}` : ""}`,
+	verdictRecorded: (branch, verdict, findings) => `verdict ${branch} を記録しました（${verdict} · findings ${findings}）`,
+	notACheckout: "fleet: git のチェックアウトの中ではありません",
 };
 
 const EN: Strings = {
@@ -372,6 +394,17 @@ const EN: Strings = {
 	reviewStarting: (branch) => `Preparing review of ${branch}...`,
 	reviewStarted: (branch, paneId, agent, material) => `Reviewing ${branch} (pane ${paneId} · agent ${agent} · ${material})`,
 	reviewMaterial: (diff, messages) => `diff ${diff} characters · ${messages} author messages`,
+	statusNone: "No run has been recorded yet",
+	statusHeader: "branch · scope · state · verdict",
+	statusLine: (row) => `${row.branch} · ${row.scope} · ${row.state} · ${row.verdict}`,
+	stateWorking: "working",
+	stateUnreviewed: "unreviewed",
+	stateMerged: "merged",
+	mergeUsage: "Usage: /fleet merge <branch> [--force]",
+	mergeStarting: (branch) => `Merging ${branch}...`,
+	mergeDone: (branch, output) => `Merged ${branch}${output ? ` — ${output}` : ""}`,
+	verdictRecorded: (branch, verdict, findings) => `Recorded ${verdict} for ${branch} (${findings} findings)`,
+	notACheckout: "fleet: not inside a git checkout",
 };
 
 export function strings(): Strings {

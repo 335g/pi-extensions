@@ -39,7 +39,10 @@ project settings (`.pi/settings.json`) instead.
   [--no-start]` — fork a worktree, start a Pi session in it, and hand it the task
 - `/fleet review <branch> --task "<text>" [--base <ref>]` — start a read-only reviewer inside that
   worktree, with the diff and the author's own session
-- `fleet_fork` / `fleet_review` — the same two from an agent, as tools rather than a command line
+- `/fleet status` — every recorded run: branch, scope, state and verdict
+- `/fleet merge <branch> [--force]` — merge an approved branch into the main checkout
+- `fleet_fork` / `fleet_review` / `fleet_verdict` — the same from an agent, as tools rather than a
+  command line
 
 | Key | Action |
 |-----|--------|
@@ -239,20 +242,53 @@ reasoning around the last commits matters more than the opening. Only the tail o
 (4 MB), and a session that was cut says so in the seed. The last message is the author's report;
 the ones before it are how it got there.
 
-The seed fixes the answer's shape for now:
-
-```
-VERDICT: approve | request-changes
-FINDINGS:
-- <path>:<line> <what is wrong>
-```
-
-That is a text convention, and a temporary one. 3c replaces it with a `fleet_verdict` tool call,
-which the reading side can act on without parsing prose.
+The seed ends the review with a `fleet_verdict` tool call, not a line of text: the reviewer is told
+to record `approve` or `request-changes` and one finding per problem, and that the merge gate reads
+that call and nothing else. The reviewer is started with `-e <this extension>`, so the tool exists in
+its session even when the extension is not installed, and so a review during development runs the
+code in the worktree rather than an older installed copy.
 
 A review of a branch whose worktree is not open in a workspace is refused: there is nowhere to put
 the reviewer. So is a review with no task. When no Pi session is still running in the worktree there
 is no session to read, and the seed says so rather than looking like an author who wrote nothing.
+
+## Verdicts and merging
+
+A fork, a review and a verdict are recorded in one file per branch:
+
+```
+<main checkout>/.pi/herdr-fleet/runs/<branch>.json     # `/` in the branch becomes `-`
+```
+
+`fleet_fork` writes it, `fleet_review` adds the reviewer's pane, and `fleet_verdict` adds the
+verdict. Keeping it in a file rather than in the reviewer's live session is the point: a pane can be
+closed, and a gate that opens when a pane disappears is not a gate.
+
+`fleet_verdict`:
+
+| Argument | Type | Meaning |
+|---|---|---|
+| `verdict` | `approve` / `request-changes` | Whether the change is ready |
+| `findings` | `{ path, line?, note }[]` | One entry per problem |
+
+Only the pane the run recorded as the reviewer may call it. The extension is loaded in every Pi
+session, so without that check any session could write a verdict. On `request-changes` the findings
+are sent back to the implementation session with `pane.send_input` when that session is still
+running; nothing is started in its place.
+
+```
+/fleet status
+/fleet merge feat/x
+```
+
+`/fleet status` prints one line per run — branch, scope, state, verdict — where the state is
+`working`, `unreviewed`, `approve`, `request-changes` or `merged` (`merged` when the branch is
+already in the main checkout's history).
+
+`/fleet merge` runs `git merge --no-edit` in the main checkout, and refuses unless the verdict is
+`approve` (or `--force` is given) and the tracked files are clean. Untracked files do not block it,
+because the run records themselves live under `.pi/`. The worktree is left in place: cleanup is its
+own operation.
 
 ## Notifications
 
@@ -285,8 +321,11 @@ herdr is the source of truth. The extension holds no state it cannot rebuild:
   single `pane_id` and rejects a second `events.subscribe` on an already-subscribed connection, so
   a new pane means a new connection. Nothing is accumulated: the set is re-derived from the
   snapshot and compared.
-- The fork loop has no second half yet. A review is started and its verdict is text that nothing
-  reads yet, and nothing gates a merge (3c). There is no list of the worktrees you have forked.
+- The fork loop is closed: a fork, a review and a verdict are recorded per branch, `/fleet status`
+  lists them, and `/fleet merge` refuses a branch that has no `approve`. What is still missing is the
+  cleanup — a merged worktree is left in place.
+- A reviewer is started with `-e <this extension>`: the code it runs is the code that started it, not
+  an installed copy.
 - `worktree.create` cannot branch from a linked worktree, so `/fleet fork` from inside one is created
   from the main checkout, pinned to the caller's HEAD. Uncommitted changes there stay behind; the
   command warns when there are any.

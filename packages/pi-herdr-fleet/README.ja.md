@@ -39,9 +39,12 @@ pi install npm:@335g/pi-herdr-fleet
   [--no-start]` — worktree を fork し、その中で Pi セッションを起動し、タスクを渡す
 - `/fleet review <branch> --task "<text>" [--base <ref>]` — その worktree の中で読み取り専用の
   レビュワーを起動し、diff と作者のセッションを渡す
+- `/fleet status` — 記録済みの run ごとに branch / scope / 状態 / verdict を出す
+- `/fleet merge <branch> [--force]` — approve 済みのブランチを main checkout にマージする
 - `fleet_fork` ツール — 同じことを agent から呼ぶ。引数は `branch` / `task` / `base` / `scope` /
   `install` / `start`
 - `fleet_review` ツール — 同じことを agent から呼ぶ。引数は `branch` / `task` / `base`
+- `fleet_verdict` ツール — レビュワーが verdict を記録する。引数は `verdict` / `findings`
 
 | キー | 動作 |
 |------|------|
@@ -230,20 +233,51 @@ fork の仕事はできるだけ渡さないことだった（仕事はタスク
 ファイルの末尾（4 MB）だけで、切った場合は seed にそう書く。最後のメッセージが作者の報告で、その前が
 そこに至る道筋になる。
 
-seed は今のところ答えの形を固定している。
-
-```
-VERDICT: approve | request-changes
-FINDINGS:
-- <path>:<line> <what is wrong>
-```
-
-これはテキストの規約で、暫定。3c で `fleet_verdict` ツール呼び出しに差し替える。読む側が散文をパース
-せずに扱えるようになる。
+seed はレビューの終わりをテキスト行ではなく `fleet_verdict` ツール呼び出しに固定する。レビュワーには
+`approve` か `request-changes` と、問題ごとの finding を記録するよう指示し、マージゲートが読むのは
+その呼び出しだけで、散文は読まないと明記する。レビュワーは `-e <この拡張>` 付きで起動する。インスト
+ール未済でも `fleet_verdict` が渡り、開発中のレビューは main checkout の古いコードではなく worktree の
+コードを使う。
 
 worktree がどの workspace にも開かれていないブランチは拒否する。レビュワーを置く場所が無い。タスクの
 無いレビューも拒否する。worktree で Pi セッションがもう動いていない場合、読むセッションが無い。その
 場合は「何も書かなかった作者」に見えないよう、seed にそう書く。
+
+## verdict とマージ
+
+fork・review・verdict はブランチごとに 1 つのファイルに記録する。
+
+```
+<main checkout>/.pi/herdr-fleet/runs/<branch>.json     # branch の `/` は `-`
+```
+
+`fleet_fork` が書き、`fleet_review` がレビュワーの pane を加え、`fleet_verdict` が verdict を加える。
+生きたレビュワーのセッションではなくファイルに置くのが要点。pane は閉じられるので、pane が消えたら
+開くゲートはゲートではない。
+
+`fleet_verdict`:
+
+| 引数 | 型 | 内容 |
+|---|---|---|
+| `verdict` | `approve` / `request-changes` | マージしてよいか |
+| `findings` | `{ path, line?, note }[]` | 問題ごとに 1 件 |
+
+呼べるのは、その run が記録したレビュワーの pane だけ。拡張はどの Pi セッションにも入っているので、
+この検査が無いとどのセッションからでも verdict を書ける。`request-changes` の findings は、実装
+セッションがまだ生きていれば `pane.send_input` で送り返す。代わりのセッションは立てない。
+
+```
+/fleet status
+/fleet merge feat/x
+```
+
+`/fleet status` は run ごとに branch · scope · 状態 · verdict を 1 行で出す。状態は `working` /
+`unreviewed` / `approve` / `request-changes` / `merged`（ブランチが既に main checkout の履歴に入って
+いれば `merged`）。
+
+`/fleet merge` は main checkout で `git merge --no-edit` を実行する。verdict が `approve` でなければ
+（`--force` が無ければ）拒否し、追跡ファイルが汚れていても拒否する。未追跡ファイルは止めない。run の
+記録自体が `.pi/` の下にあるため。worktree は消さない。後始末は別の操作にする。
 
 ## 通知
 
@@ -274,8 +308,11 @@ worktree がどの workspace にも開かれていないブランチは拒否す
 - pane の集合ごとに購読接続が 1 本要る。herdr の `pane.agent_status_changed` は `pane_id` 単位で、
   購読済みの接続に 2 つ目の `events.subscribe` を送ると接続が閉じられる。そのため pane が増えると
   接続も増える。溜め込みはしない。集合は snapshot から作り直して比較する。
-- 分岐 worktree ループにはまだ後半が無い。レビューは起動するが、その verdict はまだ誰も読まないテキスト
-  で、マージを止めるものも無い（3c）。fork した worktree の一覧も無い。
+- 分岐 worktree ループは閉じた。fork・review・verdict はブランチごとに記録され、`/fleet status` が
+  一覧し、`/fleet merge` は `approve` の無いブランチを拒否する。まだ無いのは後始末で、マージ済みの
+  worktree はそのまま残る。
+- レビュワーは `-e <この拡張>` 付きで起動する。動くのは、起動した側のコードであって、インストール
+  済みのコピーではない。
 - `worktree.create` は linked worktree を分岐元にできない。そのため linked worktree の中からの
   `/fleet fork` は main checkout から作られ、呼び出し元の HEAD に固定される。そこにある未コミットの
   変更は fork に入らない。ある場合は警告を出す。

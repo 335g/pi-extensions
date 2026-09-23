@@ -41,8 +41,9 @@ project settings (`.pi/settings.json`) instead.
   worktree, with the diff and the author's own session
 - `/fleet status` — every recorded run: branch, scope, state and verdict
 - `/fleet merge <branch> [--force]` — merge an approved branch into the main checkout
-- `fleet_fork` / `fleet_review` / `fleet_verdict` / `fleet_status` / `fleet_merge` — the same from
-  an agent, as tools rather than a command line
+- `/fleet clean <branch> [--force]` — remove a merged run's worktree, branch and panes
+- `fleet_fork` / `fleet_review` / `fleet_verdict` / `fleet_status` / `fleet_merge` / `fleet_clean` —
+  the same from an agent, as tools rather than a command line
 
 | Key | Action |
 |-----|--------|
@@ -282,17 +283,24 @@ running; nothing is started in its place.
 ```
 
 `/fleet status` prints one line per run — branch, scope, state, verdict — where the state is
-`working`, `unreviewed`, `approve`, `request-changes` or `merged` (`merged` when the branch is
-already in the main checkout's history).
+`working`, `unreviewed`, `approve`, `request-changes`, `merged` or `cleaned` (`merged` when the branch
+is already in the main checkout's history, `cleaned` once `/fleet clean` has removed its worktree,
+branch and panes).
 
 `/fleet merge` runs `git merge --no-edit` in the main checkout, and refuses unless the verdict is
 `approve` (or `--force` is given) and the tracked files are clean. Untracked files do not block it,
 because the run records themselves live under `.pi/`. The worktree is left in place: cleanup is its
 own operation.
 
-Both are tools as well — `fleet_status` (no arguments) and `fleet_merge` (`branch`, optional
-`force`) — and the commands are thin wrappers over the same `statusRuns` and `mergeRun` the tools
-call. The loop closes without a human at the keyboard: an agent can fork, review, and then merge.
+`/fleet clean` is that operation: it closes the panes the run recorded, removes the worktree through
+herdr's `worktree.remove`, and deletes the branch with `git branch -d` in the main checkout. It
+refuses a run whose branch is not in main's history unless `--force` is given. The run record and the
+session JSONL are kept — the record only gains a `cleanedAt`.
+
+All three are tools as well — `fleet_status` (no arguments), `fleet_merge` (`branch`, optional
+`force`) and `fleet_clean` (`branch`, optional `force`) — and the commands are thin wrappers over the
+same `statusRuns`, `mergeRun` and `cleanRun` the tools call. The loop closes without a human at the
+keyboard: an agent can fork, review, merge, and clean up.
 
 ## Notifications
 
@@ -326,8 +334,9 @@ herdr is the source of truth. The extension holds no state it cannot rebuild:
   a new pane means a new connection. Nothing is accumulated: the set is re-derived from the
   snapshot and compared.
 - The fork loop is closed: a fork, a review and a verdict are recorded per branch, `/fleet status`
-  lists them, and `/fleet merge` refuses a branch that has no `approve`. What is still missing is the
-  cleanup — a merged worktree is left in place.
+  lists them, `/fleet merge` refuses a branch that has no `approve`, and `/fleet clean` removes a
+  merged run's worktree, branch and panes. A run record and its session JSONL are never deleted: the
+  record only gains a `cleanedAt`.
 - A reviewer is started with `-e <this extension>`: the code it runs is the code that started it, not
   an installed copy.
 - `worktree.create` cannot branch from a linked worktree, so `/fleet fork` from inside one is created

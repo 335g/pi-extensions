@@ -1028,6 +1028,13 @@ try {
 			runState(record, true) === "merged",
 		"the state follows the reviewer, the verdict and the merge",
 	);
+	// The record is the only evidence left once the branch ref is gone. A cleaned
+	// run must not fall back to its verdict: `approve` would invite a merge of a
+	// branch that no longer exists.
+	const approved: RunRecord = { ...record, verdict: { verdict: "approve", findings: [], at: "now" } };
+	assert(runState({ ...approved, mergedAt: "now" }, false) === "merged", "mergedAt decides when the branch is gone");
+	assert(runState({ ...approved, mergedAt: "now", cleanedAt: "later" }, false) === "cleaned", "a cleaned run reads as cleaned, not approve");
+	assert(runState({ ...record, cleanedAt: "now" }, false) === "cleaned", "a force-cleaned unmerged run is cleaned too, not working");
 
 	// ------------------------------------------------------------- merge gate
 
@@ -1075,6 +1082,14 @@ try {
 	writeRun(listMain, { ...record, branch: "feat/working" });
 	writeRun(listMain, { ...record, branch: "feat/approved", verdict: { verdict: "approve", findings: [], at: "now" } });
 	writeRun(listMain, { ...record, branch: "feat/merged" });
+	// A cleaned run whose branch is gone: git cannot answer, so the record has to.
+	writeRun(listMain, {
+		...record,
+		branch: "feat/cleaned",
+		verdict: { verdict: "approve", findings: [], at: "now" },
+		mergedAt: "now",
+		cleanedAt: "later",
+	});
 	answer = (command, args) => {
 		if (command !== "git") return { stdout: "", stderr: "", code: 0, killed: false };
 		if (args[0] === "worktree") return { stdout: `worktree ${listMain}\n\n`, stderr: "", code: 0, killed: false };
@@ -1084,7 +1099,7 @@ try {
 	const rows = await statusRuns(run, listMain);
 	assert(
 		rows.map((row) => `${row.branch} ${row.state} ${row.verdict}`).join(",") ===
-			"feat/approved approve approve,feat/merged merged -,feat/working working -",
+			"feat/approved approve approve,feat/cleaned cleaned approve,feat/merged merged -,feat/working working -",
 		`statusRuns lists every run with its state: ${JSON.stringify(rows)}`,
 	);
 
@@ -1093,7 +1108,7 @@ try {
 	assert((statusTool.parameters as any).required === undefined, "fleet_status takes no arguments");
 	const listed = await statusTool.execute("s1", {}, undefined, undefined, { mode: "tui", cwd: listMain } as never);
 	assert(
-		(listed.content[0] as { text: string }).text.split("\n").length === 3,
+		(listed.content[0] as { text: string }).text.split("\n").length === 4,
 		`fleet_status returns one line per run: ${JSON.stringify(listed.content)}`,
 	);
 

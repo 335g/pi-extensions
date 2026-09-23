@@ -120,11 +120,12 @@ function installSummary(install: InstallOutcome | undefined, t: Strings): string
 	return t.forkInstallFailed(install.command, install.error ?? "");
 }
 
-/** The five states of §3c, in the reader's language. */
+/** The states of §3c, in the reader's language. */
 function stateLabel(state: RunState, t: Strings): string {
 	if (state === "working") return t.stateWorking;
 	if (state === "unreviewed") return t.stateUnreviewed;
 	if (state === "merged") return t.stateMerged;
+	if (state === "cleaned") return t.stateCleaned;
 	// `approve` and `request-changes` are the verdict names themselves.
 	return state;
 }

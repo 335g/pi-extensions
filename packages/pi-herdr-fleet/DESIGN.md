@@ -309,11 +309,15 @@ worktree ごとの状態を持つときに行う。
 #### `fleet_status` ツールと `/fleet status`
 
 run ごとに branch / scope / 状態 / verdict を出す。状態は 作業中 / 未レビュー / approve /
-request-changes / マージ済み。**ツールが主、コマンドは薄いラッパ**で、どちらも `statusRuns(run, main)`
-が返す同じ行を読む。違うのは言葉だけで、コマンドは `strings()` で日本語にする。引数は無い。
+request-changes / マージ済み / clean 済み。**ツールが主、コマンドは薄いラッパ**で、どちらも
+`statusRuns(run, main)` が返す同じ行を読む。違うのは言葉だけで、コマンドは `strings()` で日本語に
+する。引数は無い。
 
 マージ済みかどうかは記録のフィールドではなく main checkout の履歴に聞く（`git merge-base
---is-ancestor`）。手で merge された branch も「マージ済み」と出る。
+--is-ancestor`）。手で merge された branch も「マージ済み」と出る。ただし branch が消えていると git
+には聞けないので、そのときは記録の `mergedAt`（`fleet_merge` が書く）と `cleanedAt`（`fleet_clean`
+が書く）を証拠にする。`cleanedAt` は `mergedAt` より優先し、clean 済みの run は verdict に落ちず
+`clean 済み` と出る。落ちると `approve` になり、もう無い branch を merge しに行く合図になる。
 
 #### `fleet_merge` ツールと `/fleet merge <branch> [--force]`
 
@@ -364,9 +368,11 @@ pane を先に閉じるのは順序の都合: `worktree.remove` は workspace �
 
 同じ branch を 2 回レビューする経路（差し戻し→再レビュー）で実際に踏んだ穴。
 
-- レビュワーの agent 名は `<branch>-review` で固定だった。herdr の agent 名は一度きりなので、
-  2 回目の `agent.start` が `agent name ... is already used` で失敗する。**レビューのたびに一意な名前に
-  する**: `session.snapshot` が返す生きた agent 名を見て、`-review`、`-review-2`、`-review-3` … と採番する。
+- レビュワーの agent 名は `<branch>-review` で固定だった。herdr 0.9.0 の agent 名は**生きた agent の
+  間で**一意で、その agent が終了・release・置換されると解放される。2 回目の `agent.start` が同じ
+  名前で `agent name ... is already used` で失敗するのは、1 人目がまだ生きているため。**レビューの
+  たびに一意な名前にする**: `session.snapshot` が返す生きた agent 名を見て、`-review`、`-review-2`、
+  `-review-3` … と採番する。
   名前は herdr の `[a-z][a-z0-9_-]{0,31}` に収める（`agentName` の切り詰めに任せる）。記録の
   `reviewer.agentName` は最新のレビュワーを指すよう上書きする
 - その失敗のとき、`fleet_review` は自分が作った pane を 1 枚残していた。**`agent.start` が失敗したら、

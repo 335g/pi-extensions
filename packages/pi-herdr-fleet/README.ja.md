@@ -41,12 +41,14 @@ pi install npm:@335g/pi-herdr-fleet
   レビュワーを起動し、diff と作者のセッションを渡す
 - `/fleet status` — 記録済みの run ごとに branch / scope / 状態 / verdict を出す
 - `/fleet merge <branch> [--force]` — approve 済みのブランチを main checkout にマージする
+- `/fleet clean <branch> [--force]` — マージ済み run の worktree / branch / pane を消す
 - `fleet_fork` ツール — 同じことを agent から呼ぶ。引数は `branch` / `task` / `base` / `scope` /
   `install` / `start`
 - `fleet_review` ツール — 同じことを agent から呼ぶ。引数は `branch` / `task` / `base`
 - `fleet_verdict` ツール — レビュワーが verdict を記録する。引数は `verdict` / `findings`
 - `fleet_status` ツール — 同じ一覧を agent から呼ぶ。引数なし
 - `fleet_merge` ツール — 同じマージを agent から呼ぶ。引数は `branch` / `force`
+- `fleet_clean` ツール — 同じ後始末を agent から呼ぶ。引数は `branch` / `force`
 
 | キー | 動作 |
 |------|------|
@@ -274,16 +276,21 @@ fork・review・verdict はブランチごとに 1 つのファイルに記録�
 ```
 
 `/fleet status` は run ごとに branch · scope · 状態 · verdict を 1 行で出す。状態は `working` /
-`unreviewed` / `approve` / `request-changes` / `merged`（ブランチが既に main checkout の履歴に入って
-いれば `merged`）。
+`unreviewed` / `approve` / `request-changes` / `merged` / `cleaned`（ブランチが既に main checkout の
+履歴に入っていれば `merged`、`/fleet clean` が worktree・branch・pane を消していれば `cleaned`）。
 
 `/fleet merge` は main checkout で `git merge --no-edit` を実行する。verdict が `approve` でなければ
 （`--force` が無ければ）拒否し、追跡ファイルが汚れていても拒否する。未追跡ファイルは止めない。run の
 記録自体が `.pi/` の下にあるため。worktree は消さない。後始末は別の操作にする。
 
-どちらもツールでもある（`fleet_status` は引数なし、`fleet_merge` は `branch` と任意の `force`）。
-コマンドは、ツールと同じ `statusRuns` / `mergeRun` を呼ぶ薄いラッパ。人間がキーボードの前に
-いなくてもループが閉じる — agent が fork し、review し、そのまま merge できる。
+その別の操作が `/fleet clean`。run が記録した pane を閉じ、herdr の `worktree.remove` で worktree を
+消し、main checkout で `git branch -d` を打つ。ブランチが main の履歴に入っていなければ `--force` が
+無い限り拒否する。run 記録とセッション JSONL は消さない — 記録には `cleanedAt` が付くだけ。
+
+どちらもツールでもある（`fleet_status` は引数なし、`fleet_merge` は `branch` と任意の `force`、
+`fleet_clean` は `branch` と任意の `force`）。コマンドは、ツールと同じ `statusRuns` / `mergeRun` /
+`cleanRun` を呼ぶ薄いラッパ。人間がキーボードの前にいなくてもループが閉じる — agent が fork し、
+review し、merge し、そのまま後始末できる。
 
 ## 通知
 
@@ -315,8 +322,9 @@ fork・review・verdict はブランチごとに 1 つのファイルに記録�
   購読済みの接続に 2 つ目の `events.subscribe` を送ると接続が閉じられる。そのため pane が増えると
   接続も増える。溜め込みはしない。集合は snapshot から作り直して比較する。
 - 分岐 worktree ループは閉じた。fork・review・verdict はブランチごとに記録され、`/fleet status` が
-  一覧し、`/fleet merge` は `approve` の無いブランチを拒否する。まだ無いのは後始末で、マージ済みの
-  worktree はそのまま残る。
+  一覧し、`/fleet merge` は `approve` の無いブランチを拒否し、`/fleet clean` がマージ済み run の
+  worktree・branch・pane を消す。run 記録とセッション JSONL は消さない。記録に `cleanedAt` が付く
+  だけ。
 - レビュワーは `-e <この拡張>` 付きで起動する。動くのは、起動した側のコードであって、インストール
   済みのコピーではない。
 - `worktree.create` は linked worktree を分岐元にできない。そのため linked worktree の中からの

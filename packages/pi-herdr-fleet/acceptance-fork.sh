@@ -1211,6 +1211,21 @@ else
 	fail "the cleanup deleted the session JSONL ($GATE_AUTHOR_SESSION)"
 fi
 
+# The run had an approve verdict, and the branch is now gone. Status must not fall
+# back to that verdict: `approve` is the signal to merge, and there is no branch
+# left to merge. The record's cleanedAt is the evidence that has to win.
+status
+CLEANED_STATUS=""
+deadline=$((SECONDS + 60))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	CLEANED_STATUS="$(history "$OBSERVER")"
+	printf '%s' "$CLEANED_STATUS" | grep -qE "$TOOL_GATE_BRANCH · implementation · (clean 済み|cleaned)" && break
+	sleep 1
+done
+check "status shows a cleaned run as cleaned" "$TOOL_GATE_BRANCH · implementation · (clean 済み|cleaned) · approve" "$CLEANED_STATUS"
+observed "cleaned status line" "$TOOL_GATE_BRANCH · implementation · .*" "$CLEANED_STATUS"
+expect_absent "status does not read the cleaned run as approve" "$TOOL_GATE_BRANCH · implementation · approve" "$CLEANED_STATUS"
+
 # ---------------------------------------------------------------- 19. review twice
 
 # A send-back followed by a re-review is a second `fleet_review` on the same

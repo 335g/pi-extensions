@@ -65,7 +65,7 @@ export interface RunRecord {
 }
 
 /** What `/fleet status` reports, derived from the record and one git question. */
-export type RunState = "working" | "unreviewed" | "approve" | "request-changes" | "merged";
+export type RunState = "working" | "unreviewed" | "approve" | "request-changes" | "merged" | "cleaned";
 
 const GIT_TIMEOUT_MS = 30_000;
 const MERGE_TIMEOUT_MS = 10 * 60_000;
@@ -126,7 +126,14 @@ export function listRuns(main: string): RunRecord[] {
 // ------------------------------------------------------------------- status
 
 export function runState(record: RunRecord, merged: boolean): RunState {
-	if (merged) return "merged";
+	// `cleanedAt` comes first: after `fleet_clean` the branch is gone, so git cannot
+	// answer, and a force-cleaned run was never merged at all. Without this a cleaned
+	// run falls back to its verdict and reads as `approve`, which invites a merge of a
+	// branch that no longer exists.
+	if (record.cleanedAt !== undefined) return "cleaned";
+	// `mergedAt` is the same kind of evidence when the branch ref is gone but the run
+	// was not cleaned: `fleet_merge` writes it only after a successful merge.
+	if (merged || record.mergedAt !== undefined) return "merged";
 	if (record.verdict) return record.verdict.verdict;
 	// A reviewer was started but never answered: the run is waiting on it.
 	if (record.reviewer) return "unreviewed";
@@ -154,7 +161,9 @@ export interface RunStatus {
  * versions of it would disagree about what is mergeable.
  *
  * One git call per run — `merged` is the main checkout's history, not a field
- * in the record, so a branch merged by hand still reads as merged.
+ * in the record, so a branch merged by hand still reads as merged. The record's
+ * own `mergedAt` and `cleanedAt` are the fallback when the branch ref is gone:
+ * a cleaned branch cannot be asked about at all.
  */
 export async function statusRuns(run: CommandRunner, main: string): Promise<RunStatus[]> {
 	const rows: RunStatus[] = [];
@@ -332,13 +341,14 @@ function firstLine(text: string): string | undefined {
 
 // ------------------------------------------------------------- the tools
 
-/** The five states, in the tool's language. `stateLabel` is the command's. */
+/** Every state, in the tool's language. `stateLabel` is the command's. */
 const STATE_TEXT: Record<RunState, string> = {
 	working: "working",
 	unreviewed: "unreviewed",
 	approve: "approve",
 	"request-changes": "request-changes",
 	merged: "merged",
+	cleaned: "cleaned",
 };
 
 /** No arguments: the list is the main checkout's own record. */

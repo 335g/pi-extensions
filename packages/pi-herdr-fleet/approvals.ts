@@ -349,6 +349,7 @@ export interface Strings {
 	stateWorking: string;
 	stateUnreviewed: string;
 	stateMerged: string;
+	stateCleaned: string;
 	mergeUsage: string;
 	mergeStarting(branch: string): string;
 	mergeDone(branch: string, output: string): string;
@@ -404,6 +405,7 @@ const JA: Strings = {
 	stateWorking: "作業中",
 	stateUnreviewed: "未レビュー",
 	stateMerged: "マージ済み",
+	stateCleaned: "clean 済み",
 	mergeUsage: "使い方: /fleet merge <branch> [--force]",
 	mergeStarting: (branch) => `merge ${branch} を実行中…`,
 	mergeDone: (branch, output) => `merge ${branch} 完了${output ? ` — ${output}` : ""}`,
@@ -460,6 +462,7 @@ const EN: Strings = {
 	stateWorking: "working",
 	stateUnreviewed: "unreviewed",
 	stateMerged: "merged",
+	stateCleaned: "cleaned",
 	mergeUsage: "Usage: /fleet merge <branch> [--force]",
 	mergeStarting: (branch) => `Merging ${branch}...`,
 	mergeDone: (branch, output) => `Merged ${branch}${output ? ` — ${output}` : ""}`,

@@ -337,39 +337,63 @@ request-changes / マージ済み。
 
 ## テストの方針
 
-**Phase 3 をマージする前に整理する。** 現状:
+3 層に分ける。**実 pane で確かめられることは acceptance に置き、fake は fake でしか作れないものに限る。**
 
 | ファイル | 行数 | 役割 |
 |---|---|---|
-| `selfcheck.ts` | 894 | fake herdr サーバに対するロジック検証 |
-| `acceptance.sh` | 194 | Phase 1/2 の実 pane 受入試験 |
-| `acceptance-fork.sh` | 734 | Phase 3a/3b の実 pane 受入試験 |
+| `selfcheck.ts` | 1050 | fake herdr サーバに対する、fake でしか作れない検査 |
+| `acceptance-lib.sh` | 199 | 2 つの acceptance が共有する harness |
+| `acceptance.sh` | 143 | Phase 1/2 の実 pane 受入試験（約 30 秒） |
+| `acceptance-fork.sh` | 905 | Phase 3a/3b/3c の実 pane 受入試験（数分） |
 
-実装（`fork.ts` 181 行 + `review.ts` 422 行）に対して試験が大きい。リポジトリの慣例
-（`pi-byetheway/selfcheck.ts` 74 行）からは大きく外れている。穴を見つけているので無駄ではないが、
-増分ごとに selfcheck +150 行 / acceptance +250 行が積み上がるペースは持続しない。
+実装（`fork.ts` 216 行 + `review.ts` 471 行）に対して試験は大きい。リポジトリの慣例
+（`pi-byetheway/selfcheck.ts` 74 行）からは外れている。穴を見つけているので無駄ではないが、
+増分ごとに selfcheck +150 行 / acceptance +250 行が積み上がるペースは持続しない。増分を足すときの
+判断は 3 つ。
 
-整理の方向:
+**置き場所。** 実 pane で確かめられることは acceptance に置く。fake に残すのは fake でしか作れない
+ものだけ。
 
-- 2 つの acceptance スクリプトを 1 つにし、共通の harness（pane 作成、observer 起動、検査、後始末）を
-  共有する。同じ処理が両方に重複している
-- selfcheck は「fake サーバでしか検証できないもの」に絞る。実 pane で検証済みの経路を fake でも
-  重ねて検証していないか見る
-- 目標は行数ではなく**重複の除去**。数を減らすために被覆を落とさない
+- transport の異常系（malformed / timeout / 接続断 / error 応答）
+- 購読の再接続と resync、refused
+- herdr が無い・古いときの縮退
+- herdr に届く前の拒否（schema、引数検証）
+- 純粋なロジック（seed の組み立て、抜粋の予算、レシピの木、lockfile→installer、branch→agent 名、
+  実行記録の読み書き、verdict の検証）
+
+実 pane の試験が既に覆っている経路を fake で重ねて検証しない。検査を落とすときは、どの実 pane の
+検査がその挙動を覆うのかを確かめてから落とす。行数は目標ではない。数を減らすために被覆を落とさない。
+
+**fake を実挙動より親切にしない。** fake は実 herdr のソケットに当てて測った挙動に合わせる。fake が
+herdr より多くを返すと偽の正しさが生まれ、fake だけが通って実 pane で壊れる。2 度起きた。
+
+- `Outcome.code` を足す前、`agent.start` のリトライ判定は「エラーメッセージに `agent_pane_busy` が
+  含まれるか」だった。fake は code を返すのに herdr のエラー本文に code は含まれず、実 pane では
+  リトライが一度も発火しなかった
+- fake の `agent.wait` は実在しない `agent_settled` を返していた。呼び出し側がその型で分岐すれば
+  fake だけが通る
+
+**共有。** 両方の acceptance が使うものは `acceptance-lib.sh` に置く。カウンタと検査、pane ヘルパ、
+observer Pi の起動、作った pane / workspace / worktree を記録して trap で消す後始末、失敗時に観測した
+画面の出力。**入口は 2 つのまま。** Phase 1/2 だけを 30 秒で回せる速さを残す。
 
 ## ファイル構成
 
 ```
 packages/pi-herdr-fleet/
-  index.ts          拡張の入口、コマンドとショートカットの登録
-  herdr-client.ts   socket 接続、購読、縮退
-  approvals.ts      ①
-  recipes.ts        レシピ
-  worktree.ts       worktree 作成と環境の引き継ぎ
-  scopes.ts         Phase 3 のスコープ registry（seed の組み立て）
-  fork.ts           ツール `fleet_fork` とコマンド `/fleet fork` の共通実装
-  selfcheck.ts      fake herdr サーバに対するロジックの検証
-  acceptance.sh     実 pane の受入試験
+  index.ts             拡張の入口、コマンドとショートカットの登録
+  herdr-client.ts      socket 接続、購読、縮退
+  approvals.ts         ①
+  recipes.ts           レシピ
+  worktree.ts          worktree 作成と環境の引き継ぎ
+  scopes.ts            Phase 3 のスコープ registry（seed の組み立て）
+  runs.ts              実行記録とマージゲート
+  fork.ts              ツール `fleet_fork` とコマンド `/fleet fork` の共通実装
+  review.ts            ツール `fleet_review` とコマンド `/fleet review` の共通実装
+  selfcheck.ts         fake herdr サーバに対する、fake でしか作れない検査
+  acceptance-lib.sh    2 つの acceptance が共有する harness
+  acceptance.sh        Phase 1/2 の実 pane 受入試験
+  acceptance-fork.sh   Phase 3a/3b/3c の実 pane 受入試験
   README.md
   README.ja.md
   package.json

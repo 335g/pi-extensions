@@ -62,6 +62,13 @@ export interface RunRecord {
 	 * are gone.
 	 */
 	cleanedAt?: string;
+	/**
+	 * Set by `fleet_clean` when it could not finish: the reason, and the stages it
+	 * did complete. `cleanedAt` stays unset, so a record with this field is a
+	 * partially cleaned run, not an untouched one. A later clean that finishes
+	 * clears it.
+	 */
+	cleanError?: string;
 }
 
 /** What `/fleet status` reports, derived from the record and one git question. */

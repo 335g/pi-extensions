@@ -56,8 +56,9 @@ export interface AgentInfo {
 
 /**
  * A request either produced a value or degraded. `code` is herdr's own error
- * code when it sent one (`agent_pane_busy`, `pane_not_found`, ...): the message
- * is for a human, so nothing should branch on its wording.
+ * code when it sent one (`agent_pane_busy`, `pane_not_found`, ...), or `timeout`
+ * when this client gave up before herdr answered: the message is for a human, so
+ * nothing should branch on its wording.
  */
 export type Outcome<T> = { ok: true; value: T } | { ok: false; error: string; code?: string };
 
@@ -132,7 +133,10 @@ export class HerdrClient {
 				resolve(outcome);
 			};
 
-			timer = setTimeout(() => finish(err(`${method}: no reply in ${timeoutMs}ms`)), timeoutMs);
+			// `timeout` is this client's code, not herdr's: the caller has to be able to
+			// tell "herdr said no" from "we stopped waiting", because a slow herdr may
+			// still finish the work it was asked for.
+			timer = setTimeout(() => finish(err(`${method}: no reply in ${timeoutMs}ms`, "timeout")), timeoutMs);
 			timer.unref?.();
 			socket.on("error", (error) => finish(err(`${method}: ${error.message}`)));
 			socket.on("end", () => finish(err(`${method}: connection closed`)));

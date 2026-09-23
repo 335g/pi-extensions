@@ -296,6 +296,7 @@ try {
 
 	const timedOut = await client.request("silent", {}, 60);
 	assert(!timedOut.ok && timedOut.error.includes("60ms"), `a missing reply must time out: ${JSON.stringify(timedOut)}`);
+	assert(!timedOut.ok && timedOut.code === "timeout", `a client timeout is not herdr's failure and must say so: ${JSON.stringify(timedOut)}`);
 
 	const read = await client.agentRead("w1:p2", "detection");
 	assert(read.ok && read.value.trim() === "question for w1:p2", `agent.read should return the text: ${JSON.stringify(read)}`);
@@ -1296,17 +1297,51 @@ try {
 
 	// The branch delete is where an incomplete cleanup surfaces: the worktree herdr
 	// could not remove still has the branch checked out. git's own message blames
-	// git, so the warnings collected before it have to travel in the error.
+	// git, so the warnings collected before it have to travel in the error. The
+	// client timed out rather than herdr answering, so herdr's own list is asked:
+	// it still has the worktree, which is why the timeout stands.
 	writeRun(cleanMain, { ...cleanRecord, branch: "feat/clean-fail" });
 	branchDeleteFails = true;
-	worktreeRemoveError = { code: "pane_not_found", message: "workspace w9 not found" };
+	worktreeList = [{ path: cleanRecord.path, branch: "feat/clean-fail", open_workspace_id: "w9" }];
+	worktreeRemoveError = { code: "timeout", message: "worktree.remove: no reply in 120000ms" };
+	runs.length = 0;
+	received.length = 0;
 	const failed = await cleanRun(client, run, { cwd: cleanMain, branch: "feat/clean-fail" });
 	assert(
 		!failed.ok && failed.error.includes("was not removed") && failed.error.includes("Cannot delete branch"),
 		`a branch-delete failure must carry the earlier warnings: ${JSON.stringify(failed)}`,
 	);
-	assert(readRun(cleanMain, "feat/clean-fail")?.cleanedAt === undefined, "an incomplete clean must not record cleanedAt");
+	assert(received.some((call) => call.method === "worktree.list"), "a timeout is checked against herdr's own list");
+	const failedRecord = readRun(cleanMain, "feat/clean-fail");
+	assert(failedRecord?.cleanedAt === undefined, "an incomplete clean must not record cleanedAt");
+	// The record is the audit trail: a cleanup that stopped half way has to say
+	// which stages ran, or the panes closed and the worktree gone still read as an
+	// untouched run. The message alone is not enough; this is the record's state.
+	assert(
+		failedRecord?.cleanError !== undefined &&
+			failedRecord.cleanError.includes("Cannot delete branch") &&
+			failedRecord.cleanError.includes("worktree removed: false"),
+		`an incomplete clean records the reason and the stages that ran: ${JSON.stringify(failedRecord)}`,
+	);
 	branchDeleteFails = false;
+
+	// The same client timeout, but herdr's list no longer has the worktree: the
+	// removal did happen, so it is not a failure and the branch delete goes ahead.
+	writeRun(cleanMain, { ...cleanRecord, branch: "feat/clean-slow" });
+	cleanBranchExists = true;
+	worktreeList = [];
+	runs.length = 0;
+	received.length = 0;
+	const slow = unwrap(await cleanRun(client, run, { cwd: cleanMain, branch: "feat/clean-slow" }), "timed-out cleanRun");
+	assert(slow.worktreeRemoved && slow.branchDeleted, `a removal herdr did finish counts as removed: ${JSON.stringify(slow)}`);
+	assert(
+		slow.warnings.some((warning) => warning.includes("did not answer")),
+		`the slow answer is still reported: ${JSON.stringify(slow.warnings)}`,
+	);
+	assert(
+		readRun(cleanMain, "feat/clean-slow")?.cleanedAt !== undefined,
+		"a removal confirmed against herdr lets the clean finish",
+	);
 	worktreeRemoveError = undefined;
 
 	// The tool is the path an agent drives; the schema carries the shape.

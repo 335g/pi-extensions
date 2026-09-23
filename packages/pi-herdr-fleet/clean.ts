@@ -31,6 +31,17 @@ import { isMerged, readRun, runFileName, runsDir, updateRun } from "./runs.ts";
 import { type CommandRunner, mainCheckout } from "./worktree.ts";
 
 const GIT_TIMEOUT_MS = 30_000;
+/**
+ * `worktree.remove` deletes a whole checkout, `node_modules` included, so the
+ * client has to outlast that. The transport's 5s default is a client-side
+ * timeout, not herdr's own speed: at 5s herdr finished the removal anyway while
+ * this side reported a failure, and the `git branch -d` that followed failed on
+ * a worktree that was already gone.
+ */
+const WORKTREE_REMOVE_TIMEOUT_MS = 120_000;
+/** After a client timeout, how long to give herdr before looking at its state. */
+const WORKTREE_CONFIRM_DELAY_MS = 2_000;
+const WORKTREE_LIST_TIMEOUT_MS = 10_000;
 
 export interface CleanRequest {
 	/** Any directory in the repository; the branch is deleted in the main checkout. */
@@ -102,9 +113,24 @@ export async function cleanRun(
 	if (record.workspaceId) {
 		// `force` here is herdr's, not the gate's: a merged worktree still has the
 		// untracked environment (`node_modules`, `.env`) that made it usable.
-		const removed = await client.request("worktree.remove", { workspace_id: record.workspaceId, force: true });
-		if (removed.ok) worktreeRemoved = true;
-		else warnings.push(`the worktree (${record.workspaceId}) was not removed: ${removed.error}`);
+		const removed = await client.request(
+			"worktree.remove",
+			{ workspace_id: record.workspaceId, force: true },
+			WORKTREE_REMOVE_TIMEOUT_MS,
+		);
+		if (removed.ok) {
+			worktreeRemoved = true;
+		} else if (removed.code === "timeout" && (await confirmRemoved(client, main, record))) {
+			// The client gave up; herdr did not. A client-side timeout is not herdr's
+			// failure, so herdr's own state decides — the branch delete below would fail
+			// on a worktree that is really still there, not on one that is really gone.
+			worktreeRemoved = true;
+			warnings.push(
+				`the worktree (${record.workspaceId}) was removed, but herdr did not answer within ${WORKTREE_REMOVE_TIMEOUT_MS}ms`,
+			);
+		} else {
+			warnings.push(`the worktree (${record.workspaceId}) was not removed: ${removed.error}`);
+		}
 	} else {
 		warnings.push("the run recorded no workspace, so no worktree was removed");
 	}
@@ -123,6 +149,13 @@ export async function cleanRun(
 			// message then points at git rather than at herdr. The warnings carry the
 			// root cause, so they go into the error instead of being dropped.
 			const context = warnings.length === 0 ? "" : `; before it: ${warnings.join("; ")}`;
+			// The record is the audit trail, so a cleanup that stopped half way has to
+			// say so: `cleanedAt` stays unset, and `cleanError` carries the reason and
+			// the stages that did run. Without it the panes would be closed and the
+			// worktree gone while the record still read as an untouched run. A later
+			// clean that finishes clears the field again.
+			const progress = `panes closed: ${panesClosed.length === 0 ? "none" : panesClosed.join(", ")}; worktree removed: ${worktreeRemoved}`;
+			updateRun(main, branch, { cleanError: `${reason} (${progress})` });
 			return err(
 				`clean: git branch ${request.force === true ? "-D" : "-d"} ${branch} failed: ${reason}${context}`,
 			);
@@ -131,8 +164,9 @@ export async function cleanRun(
 	}
 
 	// The record stays. It is the audit trail, and `cleanedAt` is what says the
-	// rest of it is history rather than live state.
-	updateRun(main, branch, { cleanedAt: new Date().toISOString() });
+	// rest of it is history rather than live state. `cleanError` is cleared by a
+	// clean that did finish, so a stale failure is not read as a live one.
+	updateRun(main, branch, { cleanedAt: new Date().toISOString(), cleanError: undefined });
 
 	return ok({ branch, main, worktreeRemoved, branchDeleted, panesClosed, warnings });
 }
@@ -140,6 +174,26 @@ export async function cleanRun(
 /** The panes the record names: the author's, then the reviewer's, without repeats. */
 function namedPanes(record: { paneId?: string; reviewer?: { paneId: string } }): string[] {
 	return [...new Set([record.paneId, record.reviewer?.paneId].filter((id): id is string => typeof id === "string" && id !== ""))];
+}
+
+/**
+ * Whether herdr's own worktree list still has the recorded checkout.
+ *
+ * A client timeout says only that this side stopped waiting; the list is what
+ * says whether herdr finished. The path is the worktree's identity, and it is
+ * also what the branch delete cares about: a worktree git still has registered
+ * keeps the branch checked out.
+ */
+async function confirmRemoved(
+	client: HerdrClient,
+	main: string,
+	record: { path: string },
+): Promise<boolean> {
+	await new Promise((resolve) => setTimeout(resolve, WORKTREE_CONFIRM_DELAY_MS));
+	const listed = await client.request("worktree.list", { cwd: main }, WORKTREE_LIST_TIMEOUT_MS);
+	if (!listed.ok) return false;
+	const worktrees: any[] = Array.isArray(listed.value?.worktrees) ? listed.value.worktrees : [];
+	return !worktrees.some((candidate) => candidate?.path === record.path);
 }
 
 /** Whether the branch still exists, so an already-deleted one is not an error. */
@@ -175,7 +229,7 @@ export function fleetCleanTool(client: HerdrClient, run: CommandRunner): ToolDef
 		name: "fleet_clean",
 		label: "Fleet clean",
 		description:
-			"Remove what a merged run created: its worktree through herdr's worktree.remove, its branch with `git branch -d` in the main checkout, and the panes the run recorded. It presumes the branch is already merged — the record's mergedAt, or `git merge-base --is-ancestor` — and refuses otherwise; pass force to clean an unmerged run anyway and delete its branch with -D. The run record and the session JSONL are never deleted: the record only gets a cleanedAt timestamp. Already-removed worktrees, branches and panes are not an error.",
+			"Remove what a merged run created: its worktree through herdr's worktree.remove, its branch with `git branch -d` in the main checkout, and the panes the run recorded. It presumes the branch is already merged — the record's mergedAt, or `git merge-base --is-ancestor` — and refuses otherwise; pass force to clean an unmerged run anyway and delete its branch with -D. The run record and the session JSONL are never deleted: the record gets a cleanedAt timestamp on success, and a cleanup that could not finish leaves the reason in cleanError instead. Already-removed worktrees, branches and panes are not an error.",
 		promptSnippet: "Remove a merged run's worktree, branch and panes, keeping its record",
 		promptGuidelines: [
 			"Call fleet_clean after fleet_merge to remove the worktree, branch and panes the run left behind.",

@@ -187,6 +187,8 @@ Pi のコマンドで回す。分岐するのはリポジトリだけでなく**
 4. **seed** — スコープの seed を 1 通のプロンプトとして `pane.send_input` で送る
    - `agent.prompt` は使わない。herdr が blocked と報告している pane を拒否するのと同じ層の話で、
      pane 側が正しい（§2 参照）
+   - **Enter は再送する。** 本文を送ったあとの Enter は、長い paste を取り込んでいる最中だと落ちて seed が
+     editor に残る。agent が working / blocked / done になるまで Enter を送り直す（最大 5 回）
 5. worktree path / branch / pane id / agent 名を返す。worktree ごとの状態一覧は 3c の
    `/fleet status` で作る（3a では一覧を持たない）
 
@@ -269,7 +271,7 @@ worktree ごとの状態を持つときに行う。
 
 ```
 {
-  branch, base, path, workspaceId, paneId, agentName, scope, task, createdAt,
+  branch, base, path, workspaceId, paneId, agentName, scope, task, createdAt, mergedAt?,
   reviewer?: { paneId, agentName, sessionPath },
   verdict?: { verdict, findings, at }
 }
@@ -289,7 +291,9 @@ worktree ごとの状態を持つときに行う。
 
 - **呼び出し元の pane がその run の記録した reviewer pane でなければ拒否する。** 拡張は全セッションに
   入っているので、この検査が無いとどのセッションからでも verdict を書ける
-- 書き込むと同時に Pi の custom entry としても記録し、main の会話ツリーに残す
+- 書き込むと同時に Pi の custom entry としても記録する。**entry はレビュワー自身のセッション木に入る。**
+  拡張から別のセッションへ entry を書く手段が無いため。main が読むのは実行記録のファイルであって
+  entry ではない（entry はレビュワー側の記録として残す）
 - レビュワーが verdict を返さずに終わった場合、run は「未レビュー」のまま
 
 #### レビュワーの起動
@@ -310,7 +314,9 @@ request-changes / マージ済み。
 #### `/fleet merge <branch> [--force]`
 
 - `verdict.verdict === "approve"` でなければ拒否する。`--force` で上書きできる
-- main checkout の作業ツリーが汚れていれば拒否する
+- main checkout の**追跡**ファイルが汚れていれば拒否する（`git status --porcelain --untracked-files=no`）。
+  実行記録自体が main checkout の `.pi/` の下にあるので、未追跡を汚れとして扱うとゲートが自分の状態で
+  永久に閉じる。未追跡ファイルとの衝突は `git merge` 自身が拒否する
 - `git merge <branch>` を main checkout で実行する。`--ff-only` は使わない（必要なら merge commit を
   作る。`--no-edit`）
 - マージ後も run の記録は残し、worktree は消さない。後始末は別の操作にする

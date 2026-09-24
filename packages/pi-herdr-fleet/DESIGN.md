@@ -404,7 +404,10 @@ pane を先に閉じるのは順序の都合: `worktree.remove` は workspace �
   待ち時間で、herdr の速さではない。seed はこの拡張が送る中で最大のペイロード（diff 最大 60000 文字
   ＋タスク＋作者セッション）なので、`worktree.remove` と同じ形で明示的に長いタイムアウト
   （`SEED_INPUT_TIMEOUT_MS = 30_000`）を渡す。`paneSendInput` は第 4 引数で受け取る。短い承認の
-  回答は既定のままにする
+  回答は既定のままにする。**代償は、本当に hung した `pane.send_input` がエラーと pane の閉鎖まで
+  最大 30 秒 `fleet_fork` / `fleet_review` をブロックすること**（以前は 5 秒）。遅い応答は hang より
+  ずっと起きやすく、届いた seed を「失敗」と誤判定して pane を残す方が高くつくので、この上限は
+  受け入れる。診断（次の項目）が付くので、30 秒待った後に何が起きたかはログで分かる
 - **`pane.split` の後に失敗したら、自分が作った pane を閉じる。** `agent.start` の失敗だけでなく
   `sendSeed` の失敗でも閉じる。実装は `worktree.ts` の `closeOwnPane` に一本化し、`fork.ts` と
   `review.ts` の両方から呼ぶ。fork は worktree を残す（`afterCreate` の警告）が、pane は残さない
@@ -412,9 +415,8 @@ pane を先に閉じるのは順序の都合: `worktree.remove` は workspace �
   「Enter を何回送ったか」「snapshot が最後に報告した agent の状態」「pane を閉じられたか」を返す。
   20 分を推測に溶かした後の要求なので、次に読む人がログだけで切り分けられるようにする
 
-**60k の paste が原因かは実 pane で切り分け、原因ではないと判断した。** 実 pane の Pi（TUI）に
-`pane.send_input` で payload を書き、Enter を送って、unique な marker がセッション JSONL に現れるかを
-見た測定:
+**切り分けたのは書き込みの leg だけである。** 実 pane の Pi（TUI）に `pane.send_input` で payload を
+書き、Enter を送って、unique な marker がセッション JSONL に現れるかを見た:
 
 | payload | `pane.send_input` の応答 | Enter 後 | セッションに届いたか |
 |---|---|---|---|
@@ -425,13 +427,24 @@ pane を先に閉じるのは順序の都合: `worktree.remove` は workspace �
 
 shell pane でも 100k が 519ms で返る（10k 155ms / 40k 269ms / 60k 365ms）。「2 回目で検出」は 0.6 秒
 待って marker がまだ見えなかっただけの場合を含むので、「1 回目の Enter が落ちた」とは限らない。
-この環境では 5 秒を超える paste を再現できなかったので、**測定値は「paste の大きさそのものが原因
-ではない」ことの根拠であって、5 秒が短いことの再現ではない。** 30 秒は実測に対する余裕として置く
-上限で、境界の値ではない。なお 100k の probe は送信後にスクリプト側がハングして応答時間を記録
-できなかった（届いたことだけは pane の状態で確かめた）。
+100k の probe は送信後にスクリプト側がハングして応答時間を記録できなかった（届いたことだけは pane の
+状態で確かめた）。
 
-したがって **seed は 1 通の paste のままにする。** ファイル経由（`.pi/herdr-fleet/seeds/<branch>.md`
-に書いて「読んで従え」と送る形）は、paste が原因だと確認できた場合の代替であって、今回は採らない。
+**この測定が言えるのは「書き込みの応答が 5 秒を超えることは、この環境・この負荷では再現しなかった」
+ところまで。** 測ったのは `pane.send_input` の応答時間であって、書かれた seed が agent を working に
+するまでの時間ではない。報告された失敗のもう半分、`agent.wait: timed out waiting for agent status`
+は後者の leg（`SEED_SUBMIT_ATTEMPTS = 5` / `SEED_ACCEPT_TIMEOUT_MS = 4_000`、合計 5 × (700ms + 4s)）
+で、その定数は変えていない。**負荷が高いときの大きな paste が ingest を遅らせるという仮説は生きて
+いる**ので、変えたのは書き込み側のタイムアウトと、失敗したときの pane の閉鎖と診断である。
+
+**seed は 1 通の paste のままにする。** ファイル経由（`.pi/herdr-fleet/seeds/<branch>.md` に書いて
+「読んで従え」と送る形）は、ingest の leg が原因だと確認できたときの代替であって、いまはその証拠が
+無い。**この判断は「paste が原因ではない」の証明ではなく、原因だと確認できていないので変えない、
+という保留である。**
+
+**安定性は未検証のまま。** 実 pane での「60k 以上の seed でレビューを 3 回連続起動」は実施できて
+いない（境界の不安定さが対象なので、1 回の成功では何も証明しない）。30 秒という値も paste のまま
+という判断も、この 3 回連続が通るまで確定しない。`acceptance-fork.sh` も完走していない（§13 まで）。
 
 #### 差し戻し
 

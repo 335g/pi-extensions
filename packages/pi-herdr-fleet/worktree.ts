@@ -496,13 +496,19 @@ async function paneAgentStatus(client: HerdrClient, paneId: string): Promise<str
 
 /**
  * `pane.send_input` writes the seed as one literal payload, and the transport's
- * 5s default is a client-side wait rather than herdr's speed. The review seed is
- * the largest thing this extension sends (a diff of up to 60000 characters plus
- * the task and the author's session), and the failure that prompted this was
- * `pane.send_input: no reply in 5000ms` — herdr was simply slower than the
- * client was willing to wait. Measured against a real Pi pane, a 100k paste is
- * answered in well under a second on an idle machine; 30s leaves room for the
- * load that made 5s too short and is still bounded.
+ * 5s default is a client-side wait rather than herdr's speed. One of the two
+ * failures that prompted this was `pane.send_input: no reply in 5000ms`, and a
+ * write timeout is this side giving up rather than herdr refusing, so a longer
+ * wait is what that leg needs. What the measurement does *not* show is that 5s
+ * was too short: a 40k-100k paste is answered in 0.4-0.5s on an idle machine, so
+ * the load the failure happened under is a hypothesis, not a measured cause.
+ *
+ * The cost is that a genuinely hung `pane.send_input` blocks `fleet_fork` and
+ * `fleet_review` for up to 30s before the error and the pane close, where it was
+ * 5s. That is bounded and worth paying: a slow reply is far more likely than a
+ * hang, and wrongly reporting a delivered seed as failed is exactly what left the
+ * reviewer's pane behind. The other leg — a written seed never making the agent
+ * work — is the Enter retry in `sendSeed`, whose budget is unchanged.
  */
 const SEED_INPUT_TIMEOUT_MS = 30_000;
 

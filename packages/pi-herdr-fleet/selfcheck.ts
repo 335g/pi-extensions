@@ -16,6 +16,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { ApprovalBroker, FleetOverlay, strings } from "./approvals.ts";
 import { AuditLog, AUDIT_CUSTOM_TYPE, describe, registerAuditRenderer } from "./audit.ts";
 import { cleanRun, fleetCleanTool } from "./clean.ts";
+import { FleetViewOverlay, formatCost, formatTokens, gatherFleet } from "./fleet.ts";
 import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient, type Outcome, type SubscribeEvent } from "./herdr-client.ts";
 import { tokenize } from "./index.ts";
@@ -36,6 +37,7 @@ import {
 	writeRun,
 } from "./runs.ts";
 import { findScope, forkScopeIds, scopeIds } from "./scopes.ts";
+import { contextTokens, readSessionSummary, readTail } from "./session.ts";
 import {
 	type CommandResult,
 	type CommandRunner,
@@ -79,6 +81,7 @@ interface FakeAgent {
 	agent_status: string;
 	state_labels?: Record<string, string>;
 	agent_session?: { value: string };
+	cwd?: string;
 }
 
 /** Mutable: herdr's state is what the broker re-reads, so the test moves it. */
@@ -528,6 +531,182 @@ try {
 	assert(widths.size === 1 && widths.has(width), `overlay lines must all be ${width} wide: ${[...widths]}`);
 	assert(lines[0]!.startsWith("╭") && lines.at(-1)!.endsWith("╯"), "the overlay box must be closed");
 	assert(lines.length <= 40, "the overlay must fit the terminal");
+
+	// ------------------------------------------------------------ session summary
+
+	// The fleet view reads each pane's session from the tail, so the whole file is
+	// never in memory. What it takes out is the newest model, context, cost and
+	// words — and it has to say when the tail cut the cost into a lower bound.
+	const summaryPath = join(scratch, "fleet-summary.jsonl");
+	const jsonLine = (value: unknown) => `${JSON.stringify(value)}\n`;
+	writeFileSync(
+		summaryPath,
+		jsonLine({ type: "session", cwd: "/repo/wt" }) +
+			jsonLine({ type: "model_change", provider: "p", modelId: "m" }) +
+			jsonLine({ type: "message", message: { role: "user", content: [{ type: "text", text: "FIRST ASK" }] } }) +
+			// A malformed line is skipped, wherever it sits; this one is in the middle
+			// so the last two lines stay the newest user and assistant messages.
+			"{ not json at all\n" +
+			jsonLine({
+				type: "message",
+				message: {
+					role: "assistant",
+					provider: "p",
+					model: "m",
+					stopReason: "toolUse",
+					usage: { input: 100, output: 20, cacheRead: 5, cacheWrite: 0, totalTokens: 125, cost: { total: 0.001 } },
+					content: [{ type: "toolCall", name: "bash", arguments: { command: "ls" } }],
+				},
+			}) +
+			jsonLine({ type: "message", message: { role: "user", content: [{ type: "text", text: "SECOND ASK\nwith newline" }] } }) +
+			jsonLine({
+				type: "message",
+				message: {
+					role: "assistant",
+					provider: "p",
+					model: "m2",
+					stopReason: "stop",
+					usage: { input: 200, output: 30, cacheRead: 0, cacheWrite: 10, totalTokens: 240, cost: { total: 0.002 } },
+					content: [{ type: "thinking", thinking: "HIDDEN" }, { type: "text", text: "DONE" }],
+				},
+			}),
+	);
+	const summary = readSessionSummary(summaryPath);
+	assert(summary.provider === "p" && summary.modelId === "m2", `the newest model wins: ${JSON.stringify(summary)}`);
+	assert(summary.contextTokens === 240, `context is the newest usage, Pi's formula: ${summary.contextTokens}`);
+	assert(Math.abs(summary.cost - 0.003) < 1e-9, `cost is the sum over the read range: ${summary.cost}`);
+	assert(summary.lastUser === "SECOND ASK\nwith newline" && summary.lastAssistant === "DONE", "the newest user and assistant text are taken");
+	assert(!summary.lastAssistant?.includes("HIDDEN"), "thinking is not assistant text");
+	assert(summary.runningTool === undefined, "a text-only newest assistant message means nothing is running");
+	assert(summary.cwd === "/repo/wt" && summary.assistantMessages === 2 && !summary.truncated, `the session is read whole: ${JSON.stringify(summary)}`);
+
+	// A tool call in the *newest* assistant message is what is running now.
+	const runningPath = join(scratch, "fleet-running.jsonl");
+	writeFileSync(
+		runningPath,
+		jsonLine({
+			type: "message",
+			message: {
+				role: "assistant",
+				provider: "p",
+				model: "m",
+				stopReason: "toolUse",
+				usage: { input: 10, output: 5, totalTokens: 15, cost: { total: 0 } },
+				content: [{ type: "toolCall", name: "bash" }, { type: "toolCall", name: "grep" }],
+			},
+		}),
+	);
+	assert(readSessionSummary(runningPath).runningTool === "bash, grep", "the newest assistant message's tool calls are what is running");
+
+	// Both caps: a line cap drops the oldest lines and says so, and a byte cap
+	// smaller than one line reads nothing at all rather than half a record.
+	const lineCapped = readSessionSummary(summaryPath, undefined, 2);
+	assert(lineCapped.truncated && lineCapped.contextTokens === 240, `the line cap keeps the newest and flags itself: ${JSON.stringify(lineCapped)}`);
+	assert(Math.abs(lineCapped.cost - 0.002) < 1e-9, `a cut read sums only what it saw: ${lineCapped.cost}`);
+	assert(readSessionSummary(summaryPath, 8).truncated, "a tail smaller than a line is a cut read");
+	assert(contextTokens({ input: 1, output: 2, cacheRead: 3, cacheWrite: 4 }) === 10, "context falls back to the four parts summed");
+	assert(contextTokens({ totalTokens: 7, input: 1 }) === 7 && contextTokens({}) === 0, "totalTokens wins, and an empty usage is zero");
+
+	// A session of megabytes is never read whole: the primitive is bounded, and the
+	// summary of a file past the cap still comes from its newest line.
+	const bigPath = join(scratch, "fleet-big.jsonl");
+	writeFileSync(
+		bigPath,
+		`{"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"${"x".repeat(300_000)}"}]}}\n`.repeat(10) +
+			jsonLine({
+				type: "message",
+				message: {
+					role: "assistant",
+					provider: "p",
+					model: "m3",
+					stopReason: "stop",
+					usage: { totalTokens: 5, cost: { total: 0.5 } },
+					content: [{ type: "text", text: "BIG-TAIL" }],
+				},
+			}),
+	);
+	assert(readTail(bigPath, 1_000).length <= 1_000, "readTail never returns more than the bytes it was given");
+	const big = readSessionSummary(bigPath);
+	assert(
+		big.truncated && big.lastAssistant === "BIG-TAIL" && big.modelId === "m3",
+		`a session past the cap is read from its tail: ${JSON.stringify(big)}`,
+	);
+
+	// ------------------------------------------------------------ fleet view
+
+	// A pane with a real session, a pane whose session cannot be read, and a pane
+	// with no agent at all: the view lists all three, and the calling pane too.
+	snapshot.panes.push(
+		{ pane_id: "w1:p11", workspace_id: "w1" },
+		{ pane_id: "w1:p12", workspace_id: "w1" },
+		{ pane_id: "w1:p13", workspace_id: "w1" },
+	);
+	snapshot.agents.push(
+		{
+			pane_id: "w1:p11",
+			workspace_id: "w1",
+			agent: "pi",
+			name: "worker",
+			agent_status: "working",
+			agent_session: { value: summaryPath },
+			cwd: "/repo/wt",
+		},
+		{
+			pane_id: "w1:p12",
+			workspace_id: "w1",
+			agent: "pi",
+			name: "idle-one",
+			agent_status: "idle",
+			agent_session: { value: join(scratch, "gone.jsonl") },
+			cwd: "/repo/other",
+		},
+	);
+	worktreeList = [
+		{ path: "/repo/wt", branch: "feat/view", open_workspace_id: "w1" },
+		{ path: "/repo/other", branch: "main", open_workspace_id: "w2" },
+	];
+	const models = { find: (provider: string, modelId: string) => (provider === "p" && modelId === "m2" ? { contextWindow: 1_000 } : undefined) };
+	const fleetRows = unwrap(await gatherFleet(client, { cwd: "/repo", selfPaneId: "w1:p11", models }), "gatherFleet");
+	const selfRow = fleetRows.find((row) => row.paneId === "w1:p11")!;
+	assert(fleetRows[0]!.paneId === "w1:p11" && selfRow.self, "the calling pane is first and marked as self");
+	assert(selfRow.session?.modelId === "m2" && selfRow.contextWindow === 1_000, `the context window comes from the registry: ${JSON.stringify(selfRow)}`);
+	assert(selfRow.branch === "feat/view" && selfRow.cwd === "/repo/wt", `the worktree branch is matched by cwd: ${JSON.stringify(selfRow)}`);
+	const idleRow = fleetRows.find((row) => row.paneId === "w1:p12")!;
+	assert(
+		idleRow.status === "idle" && idleRow.session === undefined && typeof idleRow.sessionError === "string",
+		`an unreadable session is a row that says so, not a throw: ${JSON.stringify(idleRow)}`,
+	);
+	const shellRow = fleetRows.find((row) => row.paneId === "w1:p13")!;
+	assert(
+		shellRow.sessionPath === undefined && shellRow.session === undefined && shellRow.status === "unknown",
+		`a pane with no agent is still a row: ${JSON.stringify(shellRow)}`,
+	);
+	assert(fleetRows.some((row) => row.paneId === "w1:p1"), "every pane in the snapshot is listed");
+
+	assert(formatTokens(950) === "950" && formatTokens(12_500) === "12.5k" && formatTokens(2_500_000) === "2.5M", "tokens are shown short");
+	assert(
+		formatCost(0.001, true) === "≥$0.0010" && formatCost(0.5, false) === "$0.50" && formatCost(0, false) === "$0",
+		"a truncated cost is a lower bound and says so",
+	);
+
+	const viewOverlay = new FleetViewOverlay(client, strings(), { cwd: "/repo", selfPaneId: "w1:p11", models, maxLines: 2 });
+	viewOverlay.attach({ terminal: { rows: 40, columns: width }, requestRender: () => {} } as never, theme as never, () => {});
+	await viewOverlay.refresh();
+	const viewLines = viewOverlay.render(width);
+	const viewWidths = new Set(viewLines.map((line) => visibleWidth(line)));
+	assert(viewWidths.size === 1 && viewWidths.has(width), `fleet view lines must all be ${width} wide: ${[...viewWidths]}`);
+	const viewText = viewLines.join("\n");
+	assert(viewText.includes(strings().viewSelf), "the self marker is on the screen");
+	assert(viewText.includes(strings().viewNoSession), "a pane without a Pi session says so");
+	assert(viewText.includes(strings().viewUnreadable), "a session that cannot be read is told apart from having none");
+	assert(viewText.includes("≥"), "a truncated read shows the cost as a lower bound");
+	// The last user message is the last field, so a narrow pane truncates it; a
+	// wide one has to carry it, or the field is not in the list at all.
+	assert(viewOverlay.render(200).join("\n").includes("SECOND ASK"), "a wide list row carries the last user message");
+	viewOverlay.handleInput("\r");
+	const detail = viewOverlay.render(width).join("\n");
+	assert(detail.includes(strings().viewModel) && detail.includes("p/m2"), `the detail view names the model: ${detail}`);
+	assert(detail.includes(strings().viewBranch) && detail.includes("feat/view"), "the detail view names the worktree branch");
 
 	// ------------------------------------------------------------ recipes
 

@@ -27,7 +27,9 @@
     "runs.ts",
     "fork.ts",
     "review.ts",
-    "clean.ts"
+    "clean.ts",
+    "session.ts",
+    "fleet.ts"
   ],
   "publishConfig": {
     "access": "public"

@@ -22,6 +22,7 @@ import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil
 import { ApprovalBroker, FleetOverlay, type Strings, strings } from "./approvals.ts";
 import { AuditLog, registerAuditRenderer } from "./audit.ts";
 import { cleanRun, fleetCleanTool } from "./clean.ts";
+import { FleetViewOverlay } from "./fleet.ts";
 import { fleetForkTool, forkWorktree } from "./fork.ts";
 import { HerdrClient } from "./herdr-client.ts";
 import { applyRecipe, listRecipes, saveRecipe } from "./recipes.ts";
@@ -157,6 +158,24 @@ export default function (pi: ExtensionAPI) {
 			{ overlay: true, overlayOptions: { width: "70%", maxHeight: "80%", anchor: "center", margin: 1 } },
 		);
 		current.setOnChange(undefined);
+	}
+
+	async function openFleetView(ctx: ExtensionContext): Promise<void> {
+		if (ctx.mode !== "tui") return;
+		// No broker and no `onChange`: this view is a snapshot the human asks for,
+		// refreshed by `r`, not a live subscription. It also includes this pane.
+		await ctx.ui.custom<void>(
+			(tui, theme, _keybindings, done) => {
+				const overlay = new FleetViewOverlay(client, strings(), {
+					cwd: ctx.cwd,
+					selfPaneId: client.selfPaneId(),
+					models: ctx.modelRegistry,
+				});
+				overlay.attach(tui, theme, done);
+				return overlay;
+			},
+			{ overlay: true, overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center", margin: 1 } },
+		);
 	}
 
 	async function recipeCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
@@ -358,7 +377,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("fleet", {
-		description: "Panes waiting on a human, layout recipes, worktrees, and forks",
+		description: "Panes waiting on a human, the semantic fleet view, layout recipes, worktrees, and forks",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") return;
 			const [group, ...rest] = tokenize(args);
@@ -367,6 +386,7 @@ export default function (pi: ExtensionAPI) {
 			if (group === "fork") return forkCommand(rest, ctx);
 			if (group === "review") return reviewCommand(rest, ctx);
 			if (group === "status") return statusCommand(ctx);
+			if (group === "view") return openFleetView(ctx);
 			if (group === "merge") return mergeCommand(rest, ctx);
 			if (group === "clean") return cleanCommand(rest, ctx);
 			if (group !== undefined) {

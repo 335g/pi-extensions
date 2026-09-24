@@ -358,6 +358,26 @@ export interface Strings {
 	cleanDone(branch: string, worktree: boolean, branchDeleted: boolean, panes: number): string;
 	verdictRecorded(branch: string, verdict: string, findings: number): string;
 	notACheckout: string;
+	viewTitle: string;
+	viewCount(count: number): string;
+	viewEmpty: string;
+	viewLoading: string;
+	viewError(reason: string): string;
+	viewListKeys: string;
+	viewDetailKeys: string;
+	viewSelf: string;
+	viewNoSession: string;
+	viewUnreadable: string;
+	viewModel: string;
+	viewContext: string;
+	viewOf: string;
+	viewCost: string;
+	viewCwd: string;
+	viewBranch: string;
+	viewRunningTool: string;
+	viewLastUser: string;
+	viewLastAssistant: string;
+	viewApprox: string;
 }
 
 const JA: Strings = {
@@ -415,6 +435,26 @@ const JA: Strings = {
 		`clean ${branch} 完了（worktree ${worktree ? "削除" : "なし"} · branch ${branchDeleted ? "削除" : "なし"} · pane ${panes}）`,
 	verdictRecorded: (branch, verdict, findings) => `verdict ${branch} を記録しました（${verdict} · findings ${findings}）`,
 	notACheckout: "fleet: git のチェックアウトの中ではありません",
+	viewTitle: "fleet view",
+	viewCount: (count) => `${count} pane`,
+	viewEmpty: "pane がありません",
+	viewLoading: "読み込み中…",
+	viewError: (reason) => `読み込みに失敗: ${reason}`,
+	viewListKeys: "↑↓ 選択 · Enter 詳細 · r 再取得 · Esc 閉じる",
+	viewDetailKeys: "PgUp/PgDn · Esc 戻る · r 再取得",
+	viewSelf: "自分",
+	viewNoSession: "Pi セッションなし",
+	viewUnreadable: "セッションを読めず",
+	viewModel: "モデル",
+	viewContext: "文脈",
+	viewOf: "of",
+	viewCost: "コスト",
+	viewCwd: "cwd",
+	viewBranch: "branch",
+	viewRunningTool: "実行中",
+	viewLastUser: "最後のユーザー",
+	viewLastAssistant: "最後の assistant",
+	viewApprox: "末尾のみ読取（コストは下限）",
 };
 
 const EN: Strings = {
@@ -472,6 +512,26 @@ const EN: Strings = {
 		`Cleaned ${branch} (worktree ${worktree ? "removed" : "none"} · branch ${branchDeleted ? "deleted" : "none"} · ${panes} panes)`,
 	verdictRecorded: (branch, verdict, findings) => `Recorded ${verdict} for ${branch} (${findings} findings)`,
 	notACheckout: "fleet: not inside a git checkout",
+	viewTitle: "fleet view",
+	viewCount: (count) => `${count} panes`,
+	viewEmpty: "No panes",
+	viewLoading: "loading...",
+	viewError: (reason) => `Could not read the fleet: ${reason}`,
+	viewListKeys: "↑↓ select · Enter detail · r refresh · Esc close",
+	viewDetailKeys: "PgUp/PgDn · Esc back · r refresh",
+	viewSelf: "self",
+	viewNoSession: "no Pi session",
+	viewUnreadable: "session unreadable",
+	viewModel: "model",
+	viewContext: "context",
+	viewOf: "of",
+	viewCost: "cost",
+	viewCwd: "cwd",
+	viewBranch: "branch",
+	viewRunningTool: "running",
+	viewLastUser: "last user",
+	viewLastAssistant: "last assistant",
+	viewApprox: "tail only (cost is a lower bound)",
 };
 
 export function strings(): Strings {

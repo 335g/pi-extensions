@@ -19,7 +19,6 @@
  * with it.
  */
 
-import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { Type } from "@earendil-works/pi-ai";
@@ -28,6 +27,7 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import { type HerdrClient, type Outcome, err, ok } from "./herdr-client.ts";
 import { type RunRecord, readRun, writeRun } from "./runs.ts";
 import { findScope } from "./scopes.ts";
+import { readTail } from "./session.ts";
 import { type CommandRunner, agentName, mainCheckout, prepareWorktree, sendSeed, startAgent } from "./worktree.ts";
 
 /**
@@ -187,21 +187,6 @@ function assistantText(line: string): string {
 		.map((part: { text: string }) => part.text.trim())
 		.filter((text: string) => text !== "")
 		.join("\n");
-}
-
-function readTail(path: string, maxBytes: number): string {
-	if (statSync(path).size <= maxBytes) return readFileSync(path, "utf8");
-	const fd = openSync(path, "r");
-	try {
-		const buffer = Buffer.allocUnsafe(maxBytes);
-		const read = readSync(fd, buffer, 0, maxBytes, statSync(path).size - maxBytes);
-		const text = buffer.subarray(0, read).toString("utf8");
-		// The cut lands mid-line and possibly mid-character; the partial line goes.
-		const newline = text.indexOf("\n");
-		return newline < 0 ? "" : text.slice(newline + 1);
-	} finally {
-		closeSync(fd);
-	}
 }
 
 // ------------------------------------------------------------------ review

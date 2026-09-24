@@ -699,13 +699,19 @@ try {
 	assert(viewText.includes(strings().viewSelf), "the self marker is on the screen");
 	assert(viewText.includes(strings().viewNoSession), "a pane without a Pi session says so");
 	assert(viewText.includes(strings().viewUnreadable), "a session that cannot be read is told apart from having none");
-	assert(viewText.includes("≥"), "a truncated read shows the cost as a lower bound");
-	// The last user message is the last field, so a narrow pane truncates it; a
-	// wide one has to carry it, or the field is not in the list at all.
-	assert(viewOverlay.render(200).join("\n").includes("SECOND ASK"), "a wide list row carries the last user message");
+	// The pane id leads and the last user message follows it, so even a narrow
+	// pane keeps the meaning; the numbers are detail-only now.
+	assert(viewText.includes("> w1:p11"), `the list row leads with the pane id: ${viewText}`);
+	assert(viewText.includes("SECOND ASK"), "the list row carries the last user message");
+	assert(!viewText.includes("p/m2"), "the list does not carry the model: it is detail-only now");
 	viewOverlay.handleInput("\r");
 	const detail = viewOverlay.render(width).join("\n");
 	assert(detail.includes(strings().viewModel) && detail.includes("p/m2"), `the detail view names the model: ${detail}`);
+	assert(detail.includes(strings().viewContext), "the detail view carries the context tokens");
+	assert(
+		detail.includes(strings().viewCost) && detail.includes("≥"),
+		"the detail carries the cost, and marks a truncated read as a lower bound",
+	);
 	assert(detail.includes(strings().viewBranch) && detail.includes("feat/view"), "the detail view names the worktree branch");
 
 	// ------------------------------------------------------------ recipes

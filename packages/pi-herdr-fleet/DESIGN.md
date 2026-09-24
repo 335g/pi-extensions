@@ -475,34 +475,48 @@ JSONL には意味がある: どのモデルで、文脈が何トークンで、
 
 ### 一覧（1 pane = 1 行）
 
-`pane_id`・agent 名・状態に続けて、`provider/model`、文脈トークン（窓が分かれば `%` も）、累計コスト、
-最後のユーザー発話を ` · ` で繋ぐ。行は pane の幅で切り詰める。**最後のユーザー発話は最後の列**なので、
-狭い pane では最初に切れる。全文は詳細にある。
+`pane_id`・自分印・agent 名・状態に続けて、最後のユーザー発話を ` · ` で繋ぐ。モデル・文脈トークン・
+累計コストは一覧には出さず、詳細にだけ出す。行は pane の幅で切り詰める。
+
+**最後のユーザー発話を先頭（pane id の次）に置く。** これは実 pane で使って決めた。80 桁の pane では
+`provider/model` とコストと文脈が幅を取り、意味がある唯一の列（最後のユーザー発話）が最初に消えた。
+「意味が見える」ための道具が狭い画面で意味を落とすのは本末転倒なので、軸を pane id / 自分印 /
+agent 名 / 状態 / 最後のユーザー発話に絞り、数値は詳細へ移した。後から読む人は、この順序を「情報が
+多い方が良い」で戻さないこと。狭い pane で何が残るかがこのビューの価値を決める。
 
 - 状態は herdr の `agent_status`。agent のいない pane は `unknown`
-- 文脈トークンは Pi 自身の式（`usage.totalTokens`、無ければ `input+output+cacheRead+cacheWrite`）で、
-  中断・エラーの usage は数えない。窓は `ctx.modelRegistry.find(provider, modelId)?.contextWindow`
-- 累計コストは読めた範囲の assistant メッセージの `usage.cost.total` の合計
-- モデルは最後の assistant メッセージの `provider` / `model`。まだ assistant が無ければ最後の
-  `model_change`
+- セッションが無い pane は「Pi セッションなし」、パスはあるが読めない pane は「セッションを読めず」を
+  状態の次に出す
 
 ### 選択したときの詳細
 
-最後の assistant テキスト、`cwd`、worktree の branch、実行中のツール（**直近**の assistant メッセージ
-に tool call があればその名前。テキストだけの返答なら「実行中」は無い）。branch は `worktree.list` を
-呼び出し元の `cwd` で引き、pane の `cwd` を含む最も長い worktree の `branch` を採る。1 回の呼び出しで
-足りない repo（別 repo の pane）では branch が出ないだけで、ビューは落ちない。
+一覧から落とした数値（モデル・文脈トークン・累計コスト）と、最後の assistant テキスト、`cwd`、
+worktree の branch、実行中のツール（**直近**の assistant メッセージに tool call があればその名前。
+テキストだけの返答なら「実行中」は無い）。
+
+- モデルは最後の assistant メッセージの `provider` / `model`。まだ assistant が無ければ最後の
+  `model_change`
+- 文脈トークンは Pi 自身の式（`usage.totalTokens`、無ければ `input+output+cacheRead+cacheWrite`）で、
+  中断・エラーの usage は数えない。窓は `ctx.modelRegistry.find(provider, modelId)?.contextWindow`
+  で引き、分かれば `%` も出す
+- 累計コストは読めた範囲の assistant メッセージの `usage.cost.total` の合計
+- branch は `worktree.list` を呼び出し元の `cwd` で引き、pane の `cwd` を含む最も長い worktree の
+  `branch` を採る。1 回の呼び出しで足りない repo（別 repo の pane）では branch が出ないだけで、
+  ビューは落ちない
 
 ### 設計上の決め事
 
 - **自分自身の pane も出す。** 承認ブローカーは自分を除外する（自分の承認に答える意味が無い）が、
   これは「全体を見る」道具なので自分も含め、行に印を付ける。並びは自分が先頭、残りは workspace と
   pane id の順で安定させる
+- **専用キーは与えない。** `/fleet view` だけで十分。キーを増やすと衝突と説明のコストが増える。
+  使って不便なら後で足す。`ctrl+shift+a` は承認ブローカーのまま
 - データ源は `session.snapshot` の `agents[].agent_session.value`（Pi セッションの JSONL パス）。
   これは herdr の Pi integration が報告するもので、`-ne` で integration を切った pane には無い
 - **読む量に上限を付ける。** セッションは数MBになるので、`review.ts` から切り出した `session.ts` の
   `readTail` で末尾だけを読み（2MB）、行数（2000）と 1 メッセージの文字数（2000）にも天井を置く。
-  切り出しは `readTail` の移動だけで、review の読み方・上限・挙動は変えていない
+  pane ごとに読むので 5 pane × 2MB でも実用の範囲で、この値は変えない。切り出しは `readTail` の
+  移動だけで、review の読み方・上限・挙動は変えていない
 - 上限で切れたら値が近似であると分かるようにする。コストは下限なので `≥` を付ける。文脈・最後の発話・
   実行中のツールは末尾にあるので切れず、近似にならない
 - Pi のセッションが分からない pane（`agent_session` が無い、またはファイルがまだ無い）は、そう表示
@@ -523,8 +537,9 @@ JSONL には意味がある: どのモデルで、文脈が何トークンで、
   抽出、agent のいない pane と読めないセッションの行、`self` の印と並び → `selfcheck.ts`
 - 状態の違う実 Pi セッション（idle と、`sleep` の最中の working）と agent のいない pane を混ぜて、
   一覧・詳細・`r` がそれぞれを正しく出すこと、自分の pane が出て印が付くこと、2MB を超えた実セッション
-  が末尾から読まれて `≥` になること → `acceptance-view.sh`（observer は全幅の workspace に置く。
-  半幅に押し込むと行が切れて最後のユーザー発話が読めない）
+  が末尾から読まれて詳細のコストが `≥` になること → `acceptance-view.sh`（observer は全幅の
+  workspace に置く。半幅だと詳細の cwd 行が切れる。一覧は pane id と最後のユーザー発話を見て、
+  モデル・文脈・コストは詳細で見る）
 - 既存の 2 つの受入試験（`acceptance.sh` 18 passed、`acceptance-fork.sh` 105 passed）が引き続き通ること
 
 ### 実 pane 受入の入口が 3 本になる理由

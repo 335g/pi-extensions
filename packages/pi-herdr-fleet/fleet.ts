@@ -361,27 +361,20 @@ export class FleetViewOverlay implements Component, Focusable {
 		});
 	}
 
-	/** One pane, one line: identity and state, then the semantics, then the ask. */
+	/** One pane, one line: who it is, then what it was asked. The numbers are in
+	 * the detail view, because on a narrow pane they were crowding out the only
+	 * column that says what the pane is doing. */
 	private rowLine(row: FleetRow): string {
-		const parts: string[] = [];
+		const parts: string[] = [this.theme.fg("dim", row.paneId)];
 		if (row.self) parts.push(this.theme.fg("accent", `[${this.t.viewSelf}]`));
 		parts.push(this.theme.bold(row.name ?? row.agent ?? row.paneId));
-		parts.push(this.theme.fg("dim", row.paneId));
 		parts.push(this.theme.fg(row.status === "blocked" ? "warning" : "muted", row.status));
 		if (row.sessionError) {
 			parts.push(this.theme.fg("error", this.t.viewUnreadable));
 		} else if (!row.sessionPath) {
 			parts.push(this.theme.fg("dim", this.t.viewNoSession));
-		} else {
-			const model = modelName(row.session);
-			if (model) parts.push(this.theme.fg("muted", model));
-			const tokens = row.session?.contextTokens;
-			if (typeof tokens === "number") {
-				const percent = row.contextWindow ? ` ${Math.round((tokens / row.contextWindow) * 100)}%` : "";
-				parts.push(this.theme.fg("muted", `${formatTokens(tokens)}${percent}`));
-			}
-			if (row.session) parts.push(this.theme.fg("muted", formatCost(row.session.cost, row.session.truncated)));
-			if (row.session?.lastUser) parts.push(this.theme.fg("dim", oneLine(row.session.lastUser)));
+		} else if (row.session?.lastUser) {
+			parts.push(oneLine(row.session.lastUser));
 		}
 		return parts.join(this.theme.fg("dim", " · "));
 	}

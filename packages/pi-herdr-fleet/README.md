@@ -30,7 +30,7 @@ project settings (`.pi/settings.json`) instead.
 
 - `/fleet` — open the list of panes waiting on approval
 - `ctrl+shift+a` — the same list, without typing a command
-- `/fleet view` — every pane's model, context, cost and last user message on one screen (`r` refreshes)
+- `/fleet view` — every pane's state and last user message on one screen (model, context and cost are in the detail; `r` refreshes)
 - `/fleet recipe save <name>` — store the current tab's layout
 - `/fleet recipe apply <name> [--start]` — restore it as a new tab
 - `/fleet recipe ls` — list the stored recipes

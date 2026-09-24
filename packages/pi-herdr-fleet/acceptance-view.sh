@@ -268,7 +268,6 @@ check "the calling pane shows its own session" 'VIEW-SELF-DONE' "$SELF_ROW"
 IDLE_ROW="$(selected_row "$IDLE_PANE")"
 check "the idle subject is listed" "$IDLE_PANE" "$IDLE_ROW"
 check "the idle subject shows its state" 'idle|done' "$IDLE_ROW"
-check "the idle subject shows its model" '[a-z0-9._-]+/[a-z0-9._-]+' "$IDLE_ROW"
 check "the idle subject shows its last user message" 'VIEW-A-DONE' "$IDLE_ROW"
 
 WORKING_ROW="$(selected_row "$WORKING_PANE")"
@@ -282,7 +281,7 @@ check "a pane with no agent says it has no Pi session" '(Pi セッションな�
 
 # ---------------------------------------------------------------- 6. the detail
 
-say "6. detail: cwd, branch, and the running tool"
+say "6. detail: model, context, cost, cwd, branch, and the running tool"
 selected_row "$OBSERVER" >/dev/null
 herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1
 sleep 1.5
@@ -290,6 +289,18 @@ DETAIL="$(screen "$OBSERVER")"
 check "the detail names the cwd" "$REPO_REAL" "$DETAIL"
 check "the detail names the worktree branch" 'branch: main' "$DETAIL"
 check "the detail offers a way back" 'Esc' "$DETAIL"
+herdr pane send-keys "$OBSERVER" esc >/dev/null 2>&1
+sleep 1
+
+# The numbers are detail-only: the list keeps the pane id and the last user
+# message, so a narrow pane still says what the pane is doing.
+selected_row "$IDLE_PANE" >/dev/null
+herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1
+sleep 1.5
+IDLE_DETAIL="$(screen "$OBSERVER")"
+check "the detail shows the model" '(モデル|model): [a-z0-9._-]+/[a-z0-9._-]+' "$IDLE_DETAIL"
+check "the detail shows the context tokens" '(文脈|context): [0-9]' "$IDLE_DETAIL"
+check "the detail shows the cost" '(コスト|cost): \$' "$IDLE_DETAIL"
 herdr pane send-keys "$OBSERVER" esc >/dev/null 2>&1
 sleep 1
 
@@ -331,7 +342,14 @@ PY
 	sleep 3
 	BIG_ROW="$(selected_row "$IDLE_PANE")"
 	check "the newest user message still shows after the cut" 'VIEW-A-DONE' "$BIG_ROW"
-	check "the cost is shown as a lower bound" '≥' "$BIG_ROW"
+	# The cost moved to the detail with the rest of the numbers; the `≥` is there.
+	selected_row "$IDLE_PANE" >/dev/null
+	herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1
+	sleep 1.5
+	BIG_DETAIL="$(screen "$OBSERVER")"
+	check "the cost is shown as a lower bound" '(コスト|cost): ≥' "$BIG_DETAIL"
+	herdr pane send-keys "$OBSERVER" esc >/dev/null 2>&1
+	sleep 1
 else
 	fail "no session file to pad"
 fi

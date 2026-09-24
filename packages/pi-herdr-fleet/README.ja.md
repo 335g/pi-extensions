@@ -30,7 +30,7 @@ pi install npm:@335g/pi-herdr-fleet
 
 - `/fleet` — 承認待ちの pane の一覧を開く
 - `ctrl+shift+a` — コマンドを打たずに同じ一覧を開く
-- `/fleet view` — 全 pane のモデル・文脈・コスト・最後のユーザー発話を 1 画面に出す（`r` で再取得）
+- `/fleet view` — 全 pane の状態と最後のユーザー発話を 1 画面に出す（モデル・文脈・コストは詳細。`r` で再取得）
 - `/fleet recipe save <name>` — 現在の tab のレイアウトを保存する
 - `/fleet recipe apply <name> [--start]` — 新しい tab として復元する
 - `/fleet recipe ls` — 保存済みのレシピを一覧する

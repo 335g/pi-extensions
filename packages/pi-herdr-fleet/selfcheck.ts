@@ -714,6 +714,16 @@ try {
 		shellLine.split("w1:p13").length - 1 === 1,
 		`a pane with no name and no agent shows its id once: ${shellLine}`,
 	);
+	// The placeholder takes the message slot, so it too comes before the state.
+	assert(
+		shellLine.indexOf(strings().viewNoSession) < shellLine.indexOf("unknown"),
+		`the no-session placeholder comes before the state: ${shellLine}`,
+	);
+	const errorLine = viewLines.find((line) => line.includes("w1:p12"))!;
+	assert(
+		errorLine.indexOf(strings().viewUnreadable) < errorLine.lastIndexOf("idle"),
+		`the unreadable-session placeholder comes before the state: ${errorLine}`,
+	);
 	assert(!viewText.includes("p/m2"), "the list does not carry the model: it is detail-only now");
 	viewOverlay.handleInput("\r");
 	const detail = viewOverlay.render(width).join("\n");

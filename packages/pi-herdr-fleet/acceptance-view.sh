@@ -146,6 +146,27 @@ selected_row() { # selected_row <pane id>
 	screen "$OBSERVER" | grep -E "> .*$1" | head -1
 }
 
+# The row is cut from the right, so a field that comes first is the one that
+# survives a narrow pane. Presence alone would pass on the old order.
+check_order() { # check_order <description> <text> <first> <second>
+	if python3 -c '
+import sys
+text, first, second = sys.argv[1], sys.argv[2], sys.argv[3]
+a, b = text.find(first), text.find(second)
+sys.exit(0 if 0 <= a < b else 1)
+' "$2" "$3" "$4"; then
+		ok "$1"
+	else
+		fail "$1 ($3 must come before $4)"
+	fi
+}
+
+check_once() { # check_once <description> <text> <literal>
+	local count
+	count="$(printf '%s' "$2" | grep -oF "$3" | wc -l | tr -d ' ')"
+	if [ "$count" = "1" ]; then ok "$1"; else fail "$1 ($3 appears $count times)"; fi
+}
+
 # ---------------------------------------------------------------- preflight
 
 fleet_preflight
@@ -263,20 +284,26 @@ check "the view title is on screen" 'fleet view ·' "$LIST"
 SELF_ROW="$(selected_row "$OBSERVER")"
 check "the calling pane is listed" "$OBSERVER" "$SELF_ROW"
 check "the calling pane is marked as self" '\[(自分|self)\]' "$SELF_ROW"
+check_order "the pane id comes before the last user message" "$SELF_ROW" "$OBSERVER" 'VIEW-SELF-DONE'
+check_order "the last user message comes before the name and the state" "$SELF_ROW" 'VIEW-SELF-DONE' "$PREFIX-observer"
 check "the calling pane shows its own session" 'VIEW-SELF-DONE' "$SELF_ROW"
 
 IDLE_ROW="$(selected_row "$IDLE_PANE")"
 check "the idle subject is listed" "$IDLE_PANE" "$IDLE_ROW"
+check_order "the pane id comes before the last user message" "$IDLE_ROW" "$IDLE_PANE" 'VIEW-A-DONE'
+check_order "the last user message comes before the name and the state" "$IDLE_ROW" 'VIEW-A-DONE' "$PREFIX-idle"
 check "the idle subject shows its state" 'idle|done' "$IDLE_ROW"
 check "the idle subject shows its last user message" 'VIEW-A-DONE' "$IDLE_ROW"
 
 WORKING_ROW="$(selected_row "$WORKING_PANE")"
 check "the working subject is listed" "$WORKING_PANE" "$WORKING_ROW"
+check_order "the last user message comes before the name and the state" "$WORKING_ROW" 'VIEW-B-DONE' "$PREFIX-working"
 check "the working subject shows its state" 'working' "$WORKING_ROW"
 check "the working subject shows its last user message" 'VIEW-B-DONE' "$WORKING_ROW"
 
 SHELL_ROW="$(selected_row "$SHELL_PANE")"
 check "a pane with no agent is listed" "$SHELL_PANE" "$SHELL_ROW"
+check_once "a pane with no name shows its id once" "$SHELL_ROW" "$SHELL_PANE"
 check "a pane with no agent says it has no Pi session" '(Pi セッションなし|no Pi session)' "$SHELL_ROW"
 
 # ---------------------------------------------------------------- 6. the detail

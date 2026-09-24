@@ -699,10 +699,21 @@ try {
 	assert(viewText.includes(strings().viewSelf), "the self marker is on the screen");
 	assert(viewText.includes(strings().viewNoSession), "a pane without a Pi session says so");
 	assert(viewText.includes(strings().viewUnreadable), "a session that cannot be read is told apart from having none");
-	// The pane id leads and the last user message follows it, so even a narrow
-	// pane keeps the meaning; the numbers are detail-only now.
-	assert(viewText.includes("> w1:p11"), `the list row leads with the pane id: ${viewText}`);
-	assert(viewText.includes("SECOND ASK"), "the list row carries the last user message");
+	// The pane id leads and the last user message follows it *before* the name and
+	// the state, so a narrow pane keeps the meaning. Presence alone would pass on
+	// the old order, so the positions are compared. The numbers are detail-only.
+	const selfLine = viewLines.find((line) => line.includes("w1:p11"))!;
+	const message = selfLine.indexOf("SECOND ASK");
+	assert(selfLine.indexOf("w1:p11") < message, `the list row leads with the pane id: ${selfLine}`);
+	assert(
+		message < selfLine.indexOf("worker") && message < selfLine.indexOf("working"),
+		`the last user message comes before the name and the state: ${selfLine}`,
+	);
+	const shellLine = viewLines.find((line) => line.includes("w1:p13"))!;
+	assert(
+		shellLine.split("w1:p13").length - 1 === 1,
+		`a pane with no name and no agent shows its id once: ${shellLine}`,
+	);
 	assert(!viewText.includes("p/m2"), "the list does not carry the model: it is detail-only now");
 	viewOverlay.handleInput("\r");
 	const detail = viewOverlay.render(width).join("\n");
@@ -713,6 +724,7 @@ try {
 		"the detail carries the cost, and marks a truncated read as a lower bound",
 	);
 	assert(detail.includes(strings().viewBranch) && detail.includes("feat/view"), "the detail view names the worktree branch");
+	assert(detail.split("w1:p11").length - 1 === 1, `the detail header names the pane id once: ${detail}`);
 
 	// ------------------------------------------------------------ recipes
 

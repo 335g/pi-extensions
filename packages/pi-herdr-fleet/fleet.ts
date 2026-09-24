@@ -361,14 +361,14 @@ export class FleetViewOverlay implements Component, Focusable {
 		});
 	}
 
-	/** One pane, one line: who it is, then what it was asked. The numbers are in
-	 * the detail view, because on a narrow pane they were crowding out the only
-	 * column that says what the pane is doing. */
+	/** One pane, one line: the pane id, then the last user message, then the name
+	 * and the state. The message comes before them because it is the one column
+	 * that says what the pane is doing, and a narrow pane cuts the row from the
+	 * right; the pane id already carries the identity, so a name is only added
+	 * when there is one. The numbers are detail-only. */
 	private rowLine(row: FleetRow): string {
 		const parts: string[] = [this.theme.fg("dim", row.paneId)];
 		if (row.self) parts.push(this.theme.fg("accent", `[${this.t.viewSelf}]`));
-		parts.push(this.theme.bold(row.name ?? row.agent ?? row.paneId));
-		parts.push(this.theme.fg(row.status === "blocked" ? "warning" : "muted", row.status));
 		if (row.sessionError) {
 			parts.push(this.theme.fg("error", this.t.viewUnreadable));
 		} else if (!row.sessionPath) {
@@ -376,6 +376,9 @@ export class FleetViewOverlay implements Component, Focusable {
 		} else if (row.session?.lastUser) {
 			parts.push(oneLine(row.session.lastUser));
 		}
+		const label = row.name ?? row.agent;
+		if (label) parts.push(this.theme.bold(label));
+		parts.push(this.theme.fg(row.status === "blocked" ? "warning" : "muted", row.status));
 		return parts.join(this.theme.fg("dim", " · "));
 	}
 
@@ -383,17 +386,12 @@ export class FleetViewOverlay implements Component, Focusable {
 		const row = this.current();
 		if (!row) return [];
 		const t = this.t;
-		const lines: string[] = [
-			[
-				this.theme.bold(row.name ?? row.agent ?? row.paneId),
-				this.theme.fg("dim", row.paneId),
-				row.self ? this.theme.fg("accent", `[${t.viewSelf}]`) : undefined,
-				this.theme.fg(row.status === "blocked" ? "warning" : "muted", row.status),
-			]
-				.filter((part): part is string => part !== undefined)
-				.join(" · "),
-			"",
-		];
+		const header: string[] = [this.theme.fg("dim", row.paneId)];
+		if (row.self) header.push(this.theme.fg("accent", `[${t.viewSelf}]`));
+		const label = row.name ?? row.agent;
+		if (label) header.push(this.theme.bold(label));
+		header.push(this.theme.fg(row.status === "blocked" ? "warning" : "muted", row.status));
+		const lines: string[] = [header.join(" · "), ""];
 		const field = (label: string, value: string | undefined) => {
 			if (value === undefined || value === "") return;
 			lines.push(this.theme.fg("dim", `${label}: `) + value);

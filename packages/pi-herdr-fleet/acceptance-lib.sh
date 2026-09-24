@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 #
-# acceptance-lib.sh — the harness the two real-pane acceptance scripts share.
+# acceptance-lib.sh — the harness the real-pane acceptance scripts share.
 #
 # Sourced, never executed:
 #
 #   source "$(dirname "$0")/acceptance-lib.sh"
 #
-# The two entry points stay separate on purpose. acceptance.sh covers Phase 1/2
-# and has to keep finishing in about a minute; acceptance-fork.sh builds a
-# scratch repository and drives real model sessions, so it takes minutes.
+# The entry points stay separate on purpose. acceptance.sh covers Phase 1/2 and
+# has to keep finishing in about a minute; acceptance-fork.sh builds a scratch
+# repository and drives real model sessions, so it takes minutes; and
+# acceptance-view.sh starts real Pi sessions in different states for the fleet
+# view. Why that is a third script, and not a section of either of the other
+# two, is argued in DESIGN.md §7 ("実 pane 受入の入口が 3 本になる理由").
 #
 # What they share lives here: the counters, the pane helpers, the observer Pi,
 # and — the part that used to be hand-written in each script and drifted — the

@@ -527,6 +527,16 @@ JSONL には意味がある: どのモデルで、文脈が何トークンで、
   半幅に押し込むと行が切れて最後のユーザー発話が読めない）
 - 既存の 2 つの受入試験（`acceptance.sh` 18 passed、`acceptance-fork.sh` 105 passed）が引き続き通ること
 
+### 実 pane 受入の入口が 3 本になる理由
+
+「テストの方針」と `acceptance-lib.sh` は「入口は 2 つのまま」と書いている。これは Phase 1/2 を 30 秒で
+回せる速さを残すための規則で、その 2 本は `acceptance.sh` と `acceptance-fork.sh` を指す。フリート
+ビューは 3 本目の `acceptance-view.sh` にした。実 Pi セッションに実モデルで答えさせ、`working` の窓を
+捕まえる必要があり、速い `acceptance.sh` に混ぜると 30 秒が壊れ、fork / review / clean を見る
+`acceptance-fork.sh` に混ぜると別機能の試験が太る。共有するもの（カウンタ、pane ヘルパ、observer の
+起動、後始末）はこれまでどおり `acceptance-lib.sh` に置く。既存の節を変えない指示なので、この逸脱は
+ここに書く。
+
 ## テストの方針
 
 3 層に分ける。**実 pane で確かめられることは acceptance に置き、fake は fake でしか作れないものに限る。**

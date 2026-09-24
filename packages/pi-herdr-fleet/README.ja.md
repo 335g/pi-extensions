@@ -30,6 +30,7 @@ pi install npm:@335g/pi-herdr-fleet
 
 - `/fleet` — 承認待ちの pane の一覧を開く
 - `ctrl+shift+a` — コマンドを打たずに同じ一覧を開く
+- `/fleet view` — 全 pane のモデル・文脈・コスト・最後のユーザー発話を 1 画面に出す（`r` で再取得）
 - `/fleet recipe save <name>` — 現在の tab のレイアウトを保存する
 - `/fleet recipe apply <name> [--start]` — 新しい tab として復元する
 - `/fleet recipe ls` — 保存済みのレシピを一覧する
@@ -409,6 +410,17 @@ agent に `fleet_fork` を呼ばせ、worktree、pane、observer の会話に残
 最後に linked worktree からの fork。main checkout から worktree が作られ、linked 側にしか無いコミット
 で fork 点が呼び出し元の HEAD に固定されたことを確かめる。未コミットの変更は引き継がれず、どちらも警告
 として出る。
+
+フリートビューは 3 本目の受入試験で通す。
+
+```sh
+packages/pi-herdr-fleet/acceptance-view.sh
+```
+
+状態の違う実 Pi セッションを 3 つ（idle、`sleep` の最中の working、observer 自身）と、agent のいない
+shell の pane を立て、一覧・詳細・`r` の再取得を確かめる。自分自身の pane が出て印が付くこと、2MB を
+超えたセッションが末尾から読まれてコストが `≥` になることも見る。実モデルに答えさせるので、
+`acceptance-fork.sh` と同じく動くモデルが要る。
 
 このリポジトリに `tsconfig.json` は無いので、型チェックは明示的に実行する:
 

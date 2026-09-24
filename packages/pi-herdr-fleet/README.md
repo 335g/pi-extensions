@@ -30,6 +30,7 @@ project settings (`.pi/settings.json`) instead.
 
 - `/fleet` — open the list of panes waiting on approval
 - `ctrl+shift+a` — the same list, without typing a command
+- `/fleet view` — every pane's model, context, cost and last user message on one screen (`r` refreshes)
 - `/fleet recipe save <name>` — store the current tab's layout
 - `/fleet recipe apply <name> [--start]` — restore it as a new tab
 - `/fleet recipe ls` — list the stored recipes
@@ -432,6 +433,18 @@ because the reviewer was told to be read-only.
 Last, a fork started from a linked worktree: a worktree is created from the main checkout, with a
 commit that exists only in the linked one proving the fork point was pinned to the caller's HEAD, and
 its uncommitted change left behind. Both are reported as warnings.
+
+The fleet view has its own, third acceptance script:
+
+```sh
+packages/pi-herdr-fleet/acceptance-view.sh
+```
+
+It starts three real Pi sessions in different states — idle, working inside `sleep`, and the observer
+itself — plus a shell pane with no agent, then checks the list, the detail view and the `r` refresh:
+that the calling pane is listed and marked, and that a session past 2MB is read from its tail and its
+cost shown as a lower bound. The sessions answer through a real model, so this needs a working model
+like `acceptance-fork.sh` does.
 
 There is no `tsconfig.json` in this repo, so the type check is explicit:
 

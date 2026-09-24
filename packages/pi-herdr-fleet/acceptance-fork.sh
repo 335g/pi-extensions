@@ -107,6 +107,24 @@ print((match or {}).get("pane_id", ""))
 ' "$1" "${2:-}"
 }
 
+# The fork's pane exists a moment after its worktree does, and `worktree list`
+# can report a worktree without its `open_workspace_id` for a sample. One read of
+# either is not a fact about the fork, and reading the two fields separately can
+# tear: this waits for the pane to be observable, re-reading both each round, and
+# gives up with an empty string so the caller's check fails on the real thing.
+await_pane_in_workspace() { # await_pane_in_workspace <branch> [deadline seconds] -> the pane id
+	local branch="$1" deadline=$((SECONDS + ${2:-120})) ws="" pane=""
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		ws="$(worktree_field "$branch" open_workspace_id)"
+		if [ -n "$ws" ]; then
+			pane="$(pane_in_workspace "$ws" pi)"
+			[ -n "$pane" ] && break
+		fi
+		sleep 0.5
+	done
+	printf '%s' "$pane"
+}
+
 # The 3c run record: the file the gate reads instead of a live pane.
 run_file() { # run_file <branch>
 	printf '%s/.pi/herdr-fleet/runs/%s.json' "$REPO" "$(printf '%s' "$1" | tr '/' '-')"
@@ -716,15 +734,17 @@ say "11. run record, /fleet status, and the gate before any verdict"
 GATE_BRANCH="$PREFIX/gate"
 GATE_TASK="Create a file named gate-marker.txt containing the word GATE, then commit it."
 fork "$GATE_BRANCH" "$GATE_TASK" --base HEAD
-await_fork "$GATE_BRANCH" yes "" 0 >/dev/null
+# Re-sampled rather than read once after `await_fork`: that run's single sample of
+# `open_workspace_id` came back empty while the gate's own Pi was already working
+# in it (its session JSONL and commit are what run 90532 left behind).
+GATE_PANE="$(await_pane_in_workspace "$GATE_BRANCH" 180)"
 GATE_PATH="$(worktree_field "$GATE_BRANCH" path)"
 GATE_WS="$(worktree_field "$GATE_BRANCH" open_workspace_id)"
 register_worktree "$GATE_WS" "$GATE_PATH"
-GATE_PANE="$(pane_in_workspace "$GATE_WS" pi)"
 if [ -n "$GATE_PATH" ] && [ -n "$GATE_PANE" ]; then
 	ok "the gate branch was forked ($GATE_PATH, pane $GATE_PANE)"
 else
-	fail "the gate branch was not forked"
+	fail "the gate branch was not forked (path '${GATE_PATH:-}', workspace '${GATE_WS:-}', pane '${GATE_PANE:-}')"
 fi
 
 deadline=$((SECONDS + 300))

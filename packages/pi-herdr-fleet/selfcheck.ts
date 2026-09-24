@@ -1040,10 +1040,14 @@ try {
 		`the seed is written before the Enter loop gives up: ${JSON.stringify(received.map((call) => call.method))}`,
 	);
 	assert(
-		undelivered.error.includes("the seed text was written (") && undelivered.error.includes("Enter was sent 5 times"),
+		undelivered.error.includes("the seed text was written (") && undelivered.error.includes("Enter was sent 7 times"),
 		`the failure says how far it got: ${JSON.stringify(undelivered)}`,
 	);
 	assert(undelivered.error.includes("last seen as idle"), `the failure reports the last agent status: ${JSON.stringify(undelivered)}`);
+	assert(
+		undelivered.error.includes("no longer shows the last line of the text"),
+		`the failure says whether the seed is still on the pane: ${JSON.stringify(undelivered)}`,
+	);
 	assert(undelivered.error.includes("agent.wait: timed out waiting for agent status"), `the failure keeps herdr's reason: ${JSON.stringify(undelivered)}`);
 	assert(undelivered.error.includes("the pane w9:p2 was closed"), `a failed seed must close its pane: ${JSON.stringify(undelivered)}`);
 

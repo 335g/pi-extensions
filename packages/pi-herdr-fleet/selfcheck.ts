@@ -139,6 +139,18 @@ const SUBSCRIPTION_TYPES = new Set(
 const PANE_SCOPED_TYPES = new Set(["pane.output_matched", "pane.agent_status_changed", "pane.scroll_changed"]);
 /** `agent.start` failures, consumed one per call; empty means it succeeds. */
 let startFaults: { code: string; message: string }[] = [];
+/**
+ * Set to have `pane.send_input` fail, or to have it never answer, so the seed's
+ * two write failures are reachable without a real pane.
+ */
+let sendInputError: { code: string; message: string } | undefined;
+let sendInputSilent = false;
+/**
+ * Set to have `agent.wait` time out when the caller is waiting for `working`.
+ * `agent.start`'s settle wait asks for idle and still succeeds, so this only
+ * breaks the seed's Enter loop.
+ */
+let agentWaitNeverWorking = false;
 /** What `worktree.list` reports. Set per test; empty means "no worktrees". */
 let worktreeList: { path: string; branch: string; open_workspace_id: string | null }[] = [];
 /** Set to have `worktree.remove` fail, the way herdr answers a workspace it no longer has. */
@@ -168,9 +180,13 @@ const server = net.createServer((socket) => {
 					reply({ result: { type: "pane_read", read: { text: `  question for ${request.params.target}  ` } } });
 					break;
 				case "pane.send_keys":
-				case "pane.send_input":
 				case "pane.close":
 					reply({ result: { type: "ok" } });
+					break;
+				case "pane.send_input":
+					// The seed's write: it can be refused, or hang past the client's wait.
+					if (sendInputError) reply({ error: sendInputError });
+					else if (!sendInputSilent) reply({ result: { type: "ok" } });
 					break;
 				case "boom":
 					reply({ error: { code: "pane_not_found", message: "pane w9:p9 not found" } });
@@ -257,6 +273,10 @@ const server = net.createServer((socket) => {
 				case "agent.wait":
 					// `agent_info`, as herdr answers it. An invented `agent_settled` would
 					// let a caller branch on a type the real server never sends.
+					if (agentWaitNeverWorking && Array.isArray(request.params.until) && request.params.until.includes("working")) {
+						reply({ error: { code: "timeout", message: "agent.wait: timed out waiting for agent status" } });
+						break;
+					}
 					reply({ result: { type: "agent_info", agent: { pane_id: request.params.target, agent_status: "idle" } } });
 					break;
 				case "silent":
@@ -312,6 +332,15 @@ try {
 			(call) => call.method === "pane.send_input" && call.params.text === "yes, go ahead" && call.params.keys.join() === "enter",
 		),
 		"send_input must submit the text followed by Enter",
+	);
+	// A seed is the largest payload this extension writes, so the caller decides
+	// how long to wait: the fixed 5s default is what the real failure hit.
+	sendInputSilent = true;
+	const stalledWrite = await client.paneSendInput("w1:p2", "x".repeat(10), [], 60);
+	sendInputSilent = false;
+	assert(
+		!stalledWrite.ok && stalledWrite.code === "timeout" && stalledWrite.error.includes("60ms"),
+		`pane.send_input must honor the caller's timeout: ${JSON.stringify(stalledWrite)}`,
 	);
 
 	// ------------------------------------------------------------ subscribe paths
@@ -838,6 +867,28 @@ try {
 		`an environment warning must reach the model: ${(warned.content[0] as { text: string }).text}`,
 	);
 
+	// The fork owns its pane on both failure paths after the split. The worktree
+	// stays — a failed fork leaves a checkout behind, which is why the error says
+	// so — but a pane whose session never started, or never got its task, has
+	// nothing in it and is closed.
+	received.length = 0;
+	startFaults = [{ code: "agent_name_taken", message: "agent name is already used" }];
+	const noAgent = await forkWorktree(client, run, { cwd: dirs.source, branch: "feat/start-fail", task: "T" });
+	startFaults = [];
+	assert(
+		!noAgent.ok && noAgent.error.includes("was created") && noAgent.error.includes("the pane w9:p2 was closed"),
+		`a fork whose agent cannot start closes its pane: ${JSON.stringify(noAgent)}`,
+	);
+
+	received.length = 0;
+	sendInputError = { code: "pane_not_found", message: "pane w9:p2 not found" };
+	const unforked = await forkWorktree(client, run, { cwd: dirs.source, branch: "feat/seed-fail", task: "T" });
+	sendInputError = undefined;
+	assert(
+		!unforked.ok && unforked.error.includes("no Enter was sent") && unforked.error.includes("the pane w9:p2 was closed"),
+		`a fork whose seed cannot be written closes its pane and says how far it got: ${JSON.stringify(unforked)}`,
+	);
+
 	// A tool reports failure by throwing; a returned value never sets the error
 	// flag, and the model has to know the fork did not happen.
 	const refusal = async (params: Record<string, unknown>, mode = "tui") => {
@@ -972,6 +1023,44 @@ try {
 		`the orphaned pane must be closed: ${JSON.stringify(received.map((call) => call.method))}`,
 	);
 	startFaults = [];
+
+	// A seed that never reaches the agent is the other half of the same hole: the
+	// pane is this call's own, so it goes, and the error has to say how far the
+	// delivery got instead of only that agent.wait timed out. The status comes from
+	// the snapshot, so the reviewer's pane is made visible to it first.
+	snapshot.agents.push({ pane_id: "w9:p2", workspace_id: "w9", agent: "pi", agent_status: "idle" });
+	received.length = 0;
+	agentWaitNeverWorking = true;
+	const undelivered = await reviewWorktree(client, run, { cwd: "/repo", branch: "feat/review", task: "TASK-MARKER" });
+	agentWaitNeverWorking = false;
+	snapshot.agents.pop();
+	assert(!undelivered.ok, `a seed that never arrives must fail the review: ${JSON.stringify(undelivered)}`);
+	assert(
+		received.some((call) => call.method === "pane.send_input" && String(call.params.text).includes("TASK-MARKER")),
+		`the seed is written before the Enter loop gives up: ${JSON.stringify(received.map((call) => call.method))}`,
+	);
+	assert(
+		undelivered.error.includes("the seed text was written (") && undelivered.error.includes("Enter was sent 5 times"),
+		`the failure says how far it got: ${JSON.stringify(undelivered)}`,
+	);
+	assert(undelivered.error.includes("last seen as idle"), `the failure reports the last agent status: ${JSON.stringify(undelivered)}`);
+	assert(undelivered.error.includes("agent.wait: timed out waiting for agent status"), `the failure keeps herdr's reason: ${JSON.stringify(undelivered)}`);
+	assert(undelivered.error.includes("the pane w9:p2 was closed"), `a failed seed must close its pane: ${JSON.stringify(undelivered)}`);
+
+	// The other write failure: herdr refuses the text outright, so no Enter is even
+	// sent — and the pane is closed just the same.
+	received.length = 0;
+	sendInputError = { code: "pane_not_found", message: "pane w9:p2 not found" };
+	const unwritten = await reviewWorktree(client, run, { cwd: "/repo", branch: "feat/review", task: "TASK-MARKER" });
+	sendInputError = undefined;
+	assert(
+		!unwritten.ok && unwritten.error.includes("pane.send_input never accepted the seed"),
+		`a refused write must be reported as such: ${JSON.stringify(unwritten)}`,
+	);
+	assert(
+		unwritten.error.includes("no Enter was sent") && unwritten.error.includes("the pane w9:p2 was closed"),
+		`a refused write sends no Enter and still closes its pane: ${JSON.stringify(unwritten)}`,
+	);
 
 	// What the reviewer was given, and where its pane landed, is asserted end to
 	// end by `acceptance-fork.sh` §9, which reads the reviewer's own session.

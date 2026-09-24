@@ -431,6 +431,18 @@ async function waitForAgent(client: HerdrClient, paneId: string): Promise<Outcom
 }
 
 /**
+ * Close a pane this call opened, and say what happened, for the failure message.
+ *
+ * Everything after `pane.split` owns the pane it just opened: nothing else has
+ * its id, so a path that gives up without closing leaves a stray pane the user
+ * has to close by hand. The string is what the caller appends to its error.
+ */
+export async function closeOwnPane(client: HerdrClient, paneId: string): Promise<string> {
+	const closed = await client.request("pane.close", { pane_id: paneId });
+	return closed.ok ? `the pane ${paneId} was closed` : `the pane ${paneId} could not be closed: ${closed.error}`;
+}
+
+/**
  * Deliver a seed as one message: the text through `pane.send_input`, then an
  * Enter, retried until the agent actually starts working.
  *
@@ -441,15 +453,27 @@ async function waitForAgent(client: HerdrClient, paneId: string): Promise<Outcom
  * retry waits on herdr's own view of the agent instead: once it is working, the
  * seed arrived. `blocked` and `done` count too, because an agent that answered
  * immediately has also received it.
+ *
+ * A failure says how far it got — whether the text was accepted, how many
+ * Enters went out, and the agent status herdr last reported — because the
+ * caller's only other option is guessing which half of the delivery failed.
  */
 export async function sendSeed(client: HerdrClient, paneId: string, text: string): Promise<Outcome<void>> {
-	const typed = await client.paneSendInput(paneId, text, []);
-	if (!typed.ok) return typed;
-	let last = "the seed was typed but the agent never started working";
-	for (let attempt = 0; attempt < SEED_SUBMIT_ATTEMPTS; attempt += 1) {
+	const typed = await client.paneSendInput(paneId, text, [], SEED_INPUT_TIMEOUT_MS);
+	if (!typed.ok) {
+		return err(
+			`sendSeed: pane.send_input never accepted the seed (${text.length} characters): ${typed.error}; no Enter was sent`,
+		);
+	}
+	let last = "the agent never reported working, blocked or done";
+	for (let attempt = 1; attempt <= SEED_SUBMIT_ATTEMPTS; attempt += 1) {
 		await delay(SEED_SUBMIT_DELAY_MS);
 		const pressed = await client.paneSendKeys(paneId, ["enter"]);
-		if (!pressed.ok) return pressed;
+		if (!pressed.ok) {
+			return err(
+				`sendSeed: the seed text was written (${text.length} characters) and Enter was sent ${attempt - 1} time(s), but the next one failed: ${pressed.error}; the agent was last seen as ${await paneAgentStatus(client, paneId)}`,
+			);
+		}
 		const accepted = await client.request(
 			"agent.wait",
 			{ target: paneId, until: ["working", "blocked", "done"], timeout_ms: SEED_ACCEPT_TIMEOUT_MS },
@@ -458,8 +482,29 @@ export async function sendSeed(client: HerdrClient, paneId: string, text: string
 		if (accepted.ok) return ok(undefined);
 		last = accepted.error;
 	}
-	return err(last);
+	return err(
+		`sendSeed: the seed text was written (${text.length} characters) and Enter was sent ${SEED_SUBMIT_ATTEMPTS} times, but the agent never started working (${last}); the agent was last seen as ${await paneAgentStatus(client, paneId)}`,
+	);
 }
+
+/** What herdr last said about the pane's agent, for a failure message. */
+async function paneAgentStatus(client: HerdrClient, paneId: string): Promise<string> {
+	const snapshot = await client.snapshot();
+	if (!snapshot.ok) return `unknown (${snapshot.error})`;
+	return snapshot.value.agents.find((agent) => agent.pane_id === paneId)?.agent_status ?? "not reported";
+}
+
+/**
+ * `pane.send_input` writes the seed as one literal payload, and the transport's
+ * 5s default is a client-side wait rather than herdr's speed. The review seed is
+ * the largest thing this extension sends (a diff of up to 60000 characters plus
+ * the task and the author's session), and the failure that prompted this was
+ * `pane.send_input: no reply in 5000ms` — herdr was simply slower than the
+ * client was willing to wait. Measured against a real Pi pane, a 100k paste is
+ * answered in well under a second on an idle machine; 30s leaves room for the
+ * load that made 5s too short and is still bounded.
+ */
+const SEED_INPUT_TIMEOUT_MS = 30_000;
 
 const SEED_SUBMIT_ATTEMPTS = 5;
 const SEED_SUBMIT_DELAY_MS = 700;

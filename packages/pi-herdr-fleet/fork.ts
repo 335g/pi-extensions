@@ -22,6 +22,7 @@ import {
 	type EnvPropagation,
 	type InstallOutcome,
 	agentName,
+	closeOwnPane,
 	createWorktree,
 	mainCheckout,
 	prepareWorktree,
@@ -134,10 +135,13 @@ export async function forkWorktree(
 	const paneId = prepared.value.paneId;
 	const agent = agentName(forked.branch);
 	const started = await startAgent(client, { paneId, name: agent });
-	if (!started.ok) return err(afterCreate(started.error));
+	// The worktree stays for inspection, but the pane is this call's own: a
+	// session that never started, or never got its task, is a pane with nothing in
+	// it, and closing it is the only thing that keeps the screen clean.
+	if (!started.ok) return err(afterCreate(`${started.error} (${await closeOwnPane(client, paneId)})`));
 
 	const sent = await sendSeed(client, paneId, scope.seed({ task, path, branch: forked.branch, base }));
-	if (!sent.ok) return err(afterCreate(sent.error));
+	if (!sent.ok) return err(afterCreate(`${sent.error} (${await closeOwnPane(client, paneId)})`));
 	forked.session = { paneId, agent };
 
 	await recordRun();

@@ -513,6 +513,10 @@ entry として書いておけば、fleet の過去が後から検索できる�
 - 同じ pane の同じ状態が連続したら書かない。herdr は再接続後に状態を再通知する。ログは遷移の列で
   あって、読み直しの列ではない
 - 拡張自身の pane は書かない。そのセッションのターンは会話にすでに残っている
+- pane の状態は、**そのセッションが作った workspace の pane だけ**書く。herdr のイベントは herdr の
+  全 pane から全セッションに届くので、この絞り込みが無いと A のリポジトリの fleet のログが機械中の
+  無関係な全 Pi セッション（B ディレクトリで起動した Pi など）に落ちる。`AuditLog` は自分の workspace
+  を持ち、fork が返した workspace を `own()` で足す。fork 以外は workspace を作らないので足さない
 - `pane.created` / `pane.closed` / `tab.*` は購読しても entry にしない。pane の出入りは頻度が高く、
   herdr 側の一覧を見れば足りる
 
@@ -539,6 +543,8 @@ entry は `summary` のほかに `event` / `at` / `pane_id` / `workspace_id` / `
   通ったことの証拠になる）
 - 同じ pane の同じ状態が 1 つの entry になり、状態を離れて戻ったら 2 つになること → `selfcheck.ts` と
   `acceptance.sh`（実 pane で `pane.report_agent` を打ち直す）
+- 自分が作っていない workspace の pane の状態が entry にならず、`own()` したあとは entry になること
+  → `selfcheck.ts`
 - worktree の作成と削除が実 pane で entry になること → `acceptance-fork.sh`
 
 ## 7. フリートビュー (`fleet.ts`)

@@ -454,5 +454,5 @@ There is no `tsconfig.json` in this repo, so the type check is explicit:
 ```sh
 npx tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext \
   --strict --skipLibCheck --allowImportingTsExtensions --types node \
-  packages/pi-herdr-fleet/index.ts
+  packages/pi-herdr-fleet/index.ts packages/pi-herdr-fleet/selfcheck.ts
 ```

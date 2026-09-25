@@ -430,5 +430,5 @@ shell の pane を立て、一覧・詳細・`r` の再取得を確かめる。�
 ```sh
 npx tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext \
   --strict --skipLibCheck --allowImportingTsExtensions --types node \
-  packages/pi-herdr-fleet/index.ts
+  packages/pi-herdr-fleet/index.ts packages/pi-herdr-fleet/selfcheck.ts
 ```

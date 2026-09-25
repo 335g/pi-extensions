@@ -634,7 +634,7 @@ worktree の branch、実行中のツール（**直近**の assistant メッセ�
 あり、速い `acceptance.sh` に混ぜると 30 秒が壊れ、fork / review / clean を見る `acceptance-fork.sh`
 に混ぜると別機能の試験が太る。共有するもの（カウンタ、pane ヘルパ、observer の起動、後始末）は
 これまでどおり `acceptance-lib.sh` に置く。`acceptance-lib.sh` のヘッダは 3 本を名指ししてこの節を
-参照するように直した。既存の節（「テストの方針」）を変えない指示なので、その 1 行はここに書く。
+参照するように直した。「テストの方針」の入口の行もここを指す。
 
 ## テストの方針
 
@@ -642,10 +642,11 @@ worktree の branch、実行中のツール（**直近**の assistant メッセ�
 
 | ファイル | 行数 | 役割 |
 |---|---|---|
-| `selfcheck.ts` | 1223 | fake herdr サーバに対する、fake でしか作れない検査 |
-| `acceptance-lib.sh` | 199 | 2 つの acceptance が共有する harness |
+| `selfcheck.ts` | 1752 | fake herdr サーバに対する、fake でしか作れない検査 |
+| `acceptance-lib.sh` | 202 | 3 つの acceptance が共有する harness |
 | `acceptance.sh` | 210 | Phase 1/2 の実 pane 受入試験（約 30 秒） |
-| `acceptance-fork.sh` | 1027 | Phase 3a/3b/3c の実 pane 受入試験（数分） |
+| `acceptance-fork.sh` | 1280 | Phase 3a/3b/3c の実 pane 受入試験（数分） |
+| `acceptance-view.sh` | 409 | フリートビューの実 pane 受入試験（実モデルが要る） |
 
 実装（`fork.ts` 216 行 + `review.ts` 471 行 + `runs.ts` 414 行）に対して試験は大きい。リポジトリの慣例
 （`pi-byetheway/selfcheck.ts` 74 行）からは外れている。穴を見つけているので無駄ではないが、
@@ -674,9 +675,20 @@ herdr より多くを返すと偽の正しさが生まれ、fake だけが通っ
 - fake の `agent.wait` は実在しない `agent_settled` を返していた。呼び出し側がその型で分岐すれば
   fake だけが通る
 
-**共有。** 両方の acceptance が使うものは `acceptance-lib.sh` に置く。カウンタと検査、pane ヘルパ、
+**共有。** 3 つの acceptance が使うものは `acceptance-lib.sh` に置く。カウンタと検査、pane ヘルパ、
 observer Pi の起動、作った pane / workspace / worktree を記録して trap で消す後始末、失敗時に観測した
-画面の出力。**入口は 2 つのまま。** Phase 1/2 だけを 30 秒で回せる速さを残す。
+画面の出力。**入口は 2 つのまま。** Phase 1/2 だけを 30 秒で回せる速さを残す。3 本目
+（`acceptance-view.sh`）を足した理由は §7 にある。
+
+**型チェックの対象。** `tsconfig.json` が無いので対象を明示する。`index.ts` だけでは
+`selfcheck.ts` が import グラフに入らず（`index.ts` は `selfcheck.ts` を import しない）、selfcheck
+側の型エラーを同じコマンドで検出できない。両方を列挙する:
+
+```sh
+npx tsc --noEmit --target es2022 --module nodenext --moduleResolution nodenext \
+  --strict --skipLibCheck --allowImportingTsExtensions --types node \
+  packages/pi-herdr-fleet/index.ts packages/pi-herdr-fleet/selfcheck.ts
+```
 
 ## ファイル構成
 

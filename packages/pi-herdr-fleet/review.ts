@@ -28,7 +28,15 @@ import { type HerdrClient, type Outcome, err, ok } from "./herdr-client.ts";
 import { type RunRecord, readRun, writeRun } from "./runs.ts";
 import { findScope } from "./scopes.ts";
 import { readTail } from "./session.ts";
-import { type CommandRunner, agentName, mainCheckout, prepareWorktree, sendSeed, startAgent } from "./worktree.ts";
+import {
+	type CommandRunner,
+	agentName,
+	closeOwnPane,
+	mainCheckout,
+	prepareWorktree,
+	sendSeed,
+	startAgent,
+} from "./worktree.ts";
 
 /**
  * This extension's own entry point, taken from where this file is loaded from.
@@ -256,11 +264,7 @@ export async function reviewWorktree(
 	const started = await startAgent(client, { paneId: prepared.value.paneId, name: agent, args: ["-e", ENTRY] });
 	if (!started.ok) {
 		// The pane is this call's own: a failed start must not leave it on screen.
-		const closed = await client.request("pane.close", { pane_id: prepared.value.paneId });
-		const where = closed.ok
-			? `the pane ${prepared.value.paneId} was closed`
-			: `the pane ${prepared.value.paneId} could not be closed: ${closed.error}`;
-		return err(`review: ${started.error} (${where})`);
+		return err(`review: ${started.error} (${await closeOwnPane(client, prepared.value.paneId)})`);
 	}
 
 	const sent = await sendSeed(
@@ -268,7 +272,10 @@ export async function reviewWorktree(
 		prepared.value.paneId,
 		scope.seed({ task, path, branch, base, diff: diffText, author: author?.text, authorSession }),
 	);
-	if (!sent.ok) return err(`review: ${sent.error} (the reviewer's pane is ${prepared.value.paneId})`);
+	// A seed that never arrived leaves a session with no task and no reason for a
+	// human to keep the pane, so the reviewer's pane goes the same way a failed
+	// start does. The seed's own error says how far delivery got.
+	if (!sent.ok) return err(`review: ${sent.error} (${await closeOwnPane(client, prepared.value.paneId)})`);
 
 	// The record is what `fleet_verdict` checks the calling pane against, so the
 	// reviewer has to be in it before it can answer.

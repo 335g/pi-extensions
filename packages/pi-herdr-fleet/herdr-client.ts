@@ -185,9 +185,13 @@ export class HerdrClient {
 	 * refuses an agent reported through `pane.report_agent` (`agent_not_ready`),
 	 * which is how hooks and plugins report state. The pane surface has neither
 	 * check, and answering an approval dialog is intentional raw input.
+	 *
+	 * `timeoutMs` is the caller's, because a payload can be large: the transport's
+	 * 5s default is a client-side wait, not herdr's speed, and a seed is the
+	 * biggest thing this extension writes. A short dialog answer keeps the default.
 	 */
-	paneSendInput(paneId: string, text: string, keys: string[] = ["enter"]): Promise<Outcome<void>> {
-		return this.expectOk("pane.send_input", { pane_id: paneId, text, keys });
+	paneSendInput(paneId: string, text: string, keys: string[] = ["enter"], timeoutMs = REQUEST_TIMEOUT_MS): Promise<Outcome<void>> {
+		return this.expectOk("pane.send_input", { pane_id: paneId, text, keys }, timeoutMs);
 	}
 
 	/**
@@ -275,8 +279,8 @@ export class HerdrClient {
 		};
 	}
 
-	private async expectOk(method: string, params: unknown): Promise<Outcome<void>> {
-		const response = await this.request(method, params);
+	private async expectOk(method: string, params: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Outcome<void>> {
+		const response = await this.request(method, params, timeoutMs);
 		return response.ok ? ok(undefined) : response;
 	}
 }

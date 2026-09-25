@@ -394,6 +394,84 @@ pane を先に閉じるのは順序の都合: `worktree.remove` は workspace �
 採番は snapshot を読むだけなのでロックではない。同時に 2 つのレビューが同じ名前を選べば、負けた側が
 `agent_name_taken` で失敗し、自分の pane を閉じる。
 
+#### seed の配送と、失敗したときの後始末
+
+60k 文字の diff を持つ branch のレビューで、`fleet_review` が 3 回連続で失敗した。エラーは
+`pane.send_input: no reply in 5000ms` と `agent.wait: timed out waiting for agent status` の 2 種類で、
+失敗したレビュワーにはセッション JSONL が無く、pane だけが残っていた。
+
+- **`pane.send_input` のタイムアウトは呼び出し側が渡す。** トランスポートの既定 5 秒はクライアント側の
+  待ち時間で、herdr の速さではない。seed はこの拡張が送る中で最大のペイロード（diff 最大 60000 文字
+  ＋タスク＋作者セッション）なので、`worktree.remove` と同じ形で明示的に長いタイムアウト
+  （`SEED_INPUT_TIMEOUT_MS = 30_000`）を渡す。`paneSendInput` は第 4 引数で受け取る。短い承認の
+  回答は既定のままにする。**代償は、本当に hung した `pane.send_input` がエラーと pane の閉鎖まで
+  最大 30 秒 `fleet_fork` / `fleet_review` をブロックすること**（以前は 5 秒）。遅い応答は hang より
+  ずっと起きやすく、届いた seed を「失敗」と誤判定して pane を残す方が高くつくので、この上限は
+  受け入れる。診断（次の項目）が付くので、30 秒待った後に何が起きたかはログで分かる
+- **`pane.split` の後に失敗したら、自分が作った pane を閉じる。** `agent.start` の失敗だけでなく
+  `sendSeed` の失敗でも閉じる。実装は `worktree.ts` の `closeOwnPane` に一本化し、`fork.ts` と
+  `review.ts` の両方から呼ぶ。fork は worktree を残す（`afterCreate` の警告）が、pane は残さない
+- **失敗メッセージに進捗を書く。** `sendSeed` は「`pane.send_input` が本文を受け取ったか」
+  「Enter を何回送ったか」「snapshot が最後に報告した agent の状態」「pane の画面に本文の最終行が
+  まだ出ているか」「pane を閉じられたか」を返す。最後の 1 つは `agent.read`（`recent_unwrapped`）で
+  pane の描画を読んで探す推定であって、編集欄を読む API ではない。送信済みの seed も transcript に
+  残るので、「画面にまだある」は「編集欄が持っている」の証明ではない。
+  20 分を推測に溶かした後の要求なので、次に読む人がログだけで切り分けられるようにする
+- **受付窓を約 90 秒に延ばし、Enter の間隔を段階的にする。** 従来は 5 回 ×（700ms 固定 + 4s）
+  ≒ 23 秒で、Enter を固定間隔で連打していた。取り込み中の Enter は落ちるだけなので、間隔は
+  0.7 / 1.4 / 2.8 / 5.6 / 11.2 / 20 / 20 秒と倍々にし（上限 20 秒）、各 Enter の後は herdr の
+  agent 状態を 4 秒見る。合計は約 62 秒 + 7 × 4 秒 ≒ 90 秒。**この 90 秒は ingest の実測から
+  出た値ではなく、余裕として置いた上限である**（ingest 時間は依然として未計測）
+
+**切り分けたのは書き込みの leg だけである。** 実 pane の Pi（TUI）に `pane.send_input` で payload を
+書き、Enter を送って、unique な marker がセッション JSONL に現れるかを見た:
+
+| payload | `pane.send_input` の応答 | Enter 後 | セッションに届いたか |
+|---|---|---|---|
+| 40000 文字（diff 形） | 385ms | 2 回目で検出 | 届いた |
+| 60000 文字（diff 形） | 474ms | 2 回目で検出 | 届いた |
+| 60000 文字（行形） | 376ms | 1 回で検出 | 届いた |
+| 100000 文字（diff 形） | 未取得（probe がハング） | 未取得 | 届いた（pane が working になり token 消費が出た） |
+
+shell pane でも 100k が 519ms で返る（10k 155ms / 40k 269ms / 60k 365ms）。「2 回目で検出」は 0.6 秒
+待って marker がまだ見えなかっただけの場合を含むので、「1 回目の Enter が落ちた」とは限らない。
+100k の probe は送信後にスクリプト側がハングして応答時間を記録できなかった（届いたことだけは pane の
+状態で確かめた）。
+
+**この測定が言えるのは「書き込みの応答が 5 秒を超えることは、この環境・この負荷では再現しなかった」
+ところまで。** 測ったのは `pane.send_input` の応答時間であって、書かれた seed が agent を working に
+するまでの時間ではない。報告された失敗のもう半分、`agent.wait: timed out waiting for agent status`
+は後者の leg である。**その定数は b31a7cb の時点では変えていなかったが、その後 5 回 ×(700ms + 4s)
+≒ 23 秒から、段階的に延びる約 90 秒へ変えた**（上の項目）。**負荷が高いときの大きな paste が
+ingest を遅らせるという仮説は生きている**ので、90 秒も paste のままという判断も、この仮説の
+証拠ではなく余裕である。
+
+**seed は 1 通の paste のままにする。** ファイル経由（`.pi/herdr-fleet/seeds/<branch>.md` に書いて
+「読んで従え」と送る形）は、ingest の leg が原因だと確認できたときの代替であって、いまはその証拠が
+無い。**この判断は「paste が原因ではない」の証明ではなく、原因だと確認できていないので変えない、
+という保留である。**
+
+**安定性は未検証のまま。** 実 pane での「60k 以上の seed でレビューを 3 回連続起動」は実施できて
+いない（境界の不安定さが対象なので、1 回の成功では何も証明しない）。90 秒という値も paste のまま
+という判断も、この 3 回連続が通るまで確定しない。
+
+**測れた範囲。** このブランチの `acceptance-fork.sh` は完走（105 passed / 0 failed、§11 を含む）。
+実 pane に review スコープの seed を直接送る確認は 2 回行い、どちらも `sendSeed` は ok だった。
+数値は実ビルダー（`scopes.ts` の `review.seed`）で測った。
+
+- seed 34018 文字。内訳は、テンプレートと見出し 1450 文字、タスク本文 60 文字、
+  `git diff main...HEAD` 27091 文字（1f8910c 時点、文字数）、作者セッション抜粋 5417 文字。
+  この回は `authorSession` を渡していないので、見出し行は base までで `author session:` の
+  行は入っていない。1178ms で ok
+- seed 67010 文字（diff 60083 文字）。以前失敗した 60000 文字の diff と同じ大きさで、
+  `git diff main...feat/pi-herdr-fleet-view`（69267 文字）を `review.ts` と同じ規則で
+  60000 文字に切ったもの（1f8910c 時点の `main...HEAD` は 27091 文字なので、これが失敗した
+  大きさの再現になる）。1194ms で ok、受信側のセッション JSONL にも本文が最後の行まで届いた
+
+**各 1 回なので安定性の証明ではない。** 前の版に「このリポジトリのどのブランチでも
+60000 文字の diff は作れない」と書いたが誤りで、`feat/pi-herdr-fleet-view` がその大きさを
+持つ（文字数は char 基準。`wc -c` では日本語の分だけ大きく出る）。
+
 #### 差し戻し
 
 `request-changes` の findings を実装セッションに送り返す経路を作る。実装セッションが生きていれば
@@ -631,6 +709,8 @@ packages/pi-herdr-fleet/
 - `.env` と `.envrc` を持つリポジトリで worktree を切り、環境変数が引き継がれること
 - 元の `.envrc` が allow されていない場合、新しい worktree で allow しないこと
 - `tsc --noEmit` が通ること
+- `node packages/pi-herdr-fleet/selfcheck.ts` が通ること。**約 75 秒かかる**: seed の give-up
+  経路が retry の待ち約 62 秒を実時間で払うため
 
 実 pane の受入試験は `packages/pi-herdr-fleet/acceptance.sh`。subject（`report-agent` で
 blocked にした shell）・observer（この拡張を読み込んだ Pi）・呼び出し元の 3 pane を作り、

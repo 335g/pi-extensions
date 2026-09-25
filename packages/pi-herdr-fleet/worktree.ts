@@ -431,25 +431,51 @@ async function waitForAgent(client: HerdrClient, paneId: string): Promise<Outcom
 }
 
 /**
+ * Close a pane this call opened, and say what happened, for the failure message.
+ *
+ * Everything after `pane.split` owns the pane it just opened: nothing else has
+ * its id, so a path that gives up without closing leaves a stray pane the user
+ * has to close by hand. The string is what the caller appends to its error.
+ */
+export async function closeOwnPane(client: HerdrClient, paneId: string): Promise<string> {
+	const closed = await client.request("pane.close", { pane_id: paneId });
+	return closed.ok ? `the pane ${paneId} was closed` : `the pane ${paneId} could not be closed: ${closed.error}`;
+}
+
+/**
  * Deliver a seed as one message: the text through `pane.send_input`, then an
  * Enter, retried until the agent actually starts working.
  *
  * A seed is a long, multi-line paste. An Enter sent while the paste is still
  * being ingested is dropped, and the seed then sits in the editor forever — the
  * failure the acceptance test catches as "the seed never reached the forked
- * session". A fixed delay is a guess that a loaded machine breaks, so the
- * retry waits on herdr's own view of the agent instead: once it is working, the
- * seed arrived. `blocked` and `done` count too, because an agent that answered
- * immediately has also received it.
+ * session". How long the ingest takes is not measured, so the retry does not
+ * assume one: the wait before each Enter doubles up to a ceiling, and after the
+ * Enter the loop waits on herdr's own view of the agent instead: once it is
+ * working, the seed arrived. `blocked` and `done` count too, because an agent
+ * that answered immediately has also received it.
+ *
+ * A failure says how far it got — whether the text was accepted, how many
+ * Enters went out, the agent status herdr last reported, and whether the seed is
+ * still on the pane's screen — because the caller's only other option is
+ * guessing which half of the delivery failed.
  */
 export async function sendSeed(client: HerdrClient, paneId: string, text: string): Promise<Outcome<void>> {
-	const typed = await client.paneSendInput(paneId, text, []);
-	if (!typed.ok) return typed;
-	let last = "the seed was typed but the agent never started working";
-	for (let attempt = 0; attempt < SEED_SUBMIT_ATTEMPTS; attempt += 1) {
-		await delay(SEED_SUBMIT_DELAY_MS);
+	const typed = await client.paneSendInput(paneId, text, [], SEED_INPUT_TIMEOUT_MS);
+	if (!typed.ok) {
+		return err(
+			`sendSeed: pane.send_input never accepted the seed (${text.length} characters): ${typed.error}; no Enter was sent`,
+		);
+	}
+	let last = "the agent never reported working, blocked or done";
+	for (let attempt = 1; attempt <= SEED_SUBMIT_ATTEMPTS; attempt += 1) {
+		await delay(submitDelayMs(attempt));
 		const pressed = await client.paneSendKeys(paneId, ["enter"]);
-		if (!pressed.ok) return pressed;
+		if (!pressed.ok) {
+			return err(
+				`sendSeed: the seed text was written (${text.length} characters) and Enter was sent ${attempt - 1} time(s), but the next one failed: ${pressed.error}; ${await seedProgress(client, paneId, text)}`,
+			);
+		}
 		const accepted = await client.request(
 			"agent.wait",
 			{ target: paneId, until: ["working", "blocked", "done"], timeout_ms: SEED_ACCEPT_TIMEOUT_MS },
@@ -458,11 +484,91 @@ export async function sendSeed(client: HerdrClient, paneId: string, text: string
 		if (accepted.ok) return ok(undefined);
 		last = accepted.error;
 	}
-	return err(last);
+	return err(
+		`sendSeed: the seed text was written (${text.length} characters) and Enter was sent ${SEED_SUBMIT_ATTEMPTS} times, but the agent never started working (${last}); ${await seedProgress(client, paneId, text)}`,
+	);
 }
 
-const SEED_SUBMIT_ATTEMPTS = 5;
+/**
+ * What can still be read off a seed that was never accepted: herdr's last agent
+ * status, and whether the seed's own text is still on the pane's screen.
+ *
+ * The second half is a rendered-pane heuristic, because herdr has no API for the
+ * editor's buffer. `recent_unwrapped` is the bottom of the scrollback, and the
+ * cursor of a paste still waiting in the editor is at its end, so the seed's
+ * last line is what a read finds there. A submitted seed is also echoed into
+ * the transcript, so finding the text means "still on screen", not proof that
+ * the editor holds it — the status is what says whether the agent took it.
+ */
+async function seedProgress(client: HerdrClient, paneId: string, text: string): Promise<string> {
+	const status = await paneAgentStatus(client, paneId);
+	const marker = seedMarker(text);
+	const read = await client.agentRead(paneId, "recent_unwrapped");
+	if (!read.ok) return `the agent was last seen as ${status}; whether the text is still on the pane is unknown (${read.error})`;
+	const onScreen = normalizeForScreen(read.value).includes(marker);
+	return `the agent was last seen as ${status}; the pane ${onScreen ? "still shows" : "no longer shows"} the last line of the text`;
+}
+
+/**
+ * The last non-empty line of a seed, whitespace and backticks removed, for
+ * looking for it in the pane's rendered text: the render wraps lines and styles
+ * code spans, so neither survives as written.
+ */
+function seedMarker(text: string): string {
+	const lines = text.split("\n");
+	for (let index = lines.length - 1; index >= 0; index -= 1) {
+		const line = lines[index] ?? "";
+		if (line.trim() !== "") return normalizeForScreen(line).slice(0, 40);
+	}
+	return "";
+}
+
+function normalizeForScreen(text: string): string {
+	return text.replace(/[\s`]/g, "");
+}
+
+/**
+ * How long to wait before pressing Enter again: `SEED_SUBMIT_DELAY_MS`, then
+ * double it, up to the ceiling. A fixed interval pressed Enter into an ingest
+ * that was still running, which is a dropped keystroke rather than a retry.
+ *
+ * With the constants below this is 0.7s, 1.4s, 2.8s, 5.6s, 11.2s, then 20s
+ * twice — about 62s of waiting, and about 90s in total with the 4s `agent.wait`
+ * after each of the 7 Enters. The ingest time that window has to cover is not
+ * measured; 90s is a ceiling that seemed generous, not a measured boundary.
+ */
+function submitDelayMs(attempt: number): number {
+	return Math.min(SEED_SUBMIT_DELAY_MS * 2 ** (attempt - 1), SEED_SUBMIT_DELAY_MAX_MS);
+}
+
+/** What herdr last said about the pane's agent, for a failure message. */
+async function paneAgentStatus(client: HerdrClient, paneId: string): Promise<string> {
+	const snapshot = await client.snapshot();
+	if (!snapshot.ok) return `unknown (${snapshot.error})`;
+	return snapshot.value.agents.find((agent) => agent.pane_id === paneId)?.agent_status ?? "not reported";
+}
+
+/**
+ * `pane.send_input` writes the seed as one literal payload, and the transport's
+ * 5s default is a client-side wait rather than herdr's speed. One of the two
+ * failures that prompted this was `pane.send_input: no reply in 5000ms`, and a
+ * write timeout is this side giving up rather than herdr refusing, so a longer
+ * wait is what that leg needs. What the measurement does *not* show is that 5s
+ * was too short: a 40k-100k paste is answered in 0.4-0.5s on an idle machine, so
+ * the load the failure happened under is a hypothesis, not a measured cause.
+ *
+ * The cost is that a genuinely hung `pane.send_input` blocks `fleet_fork` and
+ * `fleet_review` for up to 30s before the error and the pane close, where it was
+ * 5s. That is bounded and worth paying: a slow reply is far more likely than a
+ * hang, and wrongly reporting a delivered seed as failed is exactly what left the
+ * reviewer's pane behind. The other leg — a written seed never making the agent
+ * work — is the Enter retry in `sendSeed`: 7 attempts over about 90s.
+ */
+const SEED_INPUT_TIMEOUT_MS = 30_000;
+
+const SEED_SUBMIT_ATTEMPTS = 7;
 const SEED_SUBMIT_DELAY_MS = 700;
+const SEED_SUBMIT_DELAY_MAX_MS = 20_000;
 const SEED_ACCEPT_TIMEOUT_MS = 4_000;
 
 function delay(ms: number): Promise<void> {

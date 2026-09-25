@@ -641,7 +641,17 @@ try {
 	const longPath = join(scratch, "fleet-long.jsonl");
 	writeFileSync(
 		longPath,
-		jsonLine({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "y".repeat(5_000) }] } }),
+		jsonLine({
+			type: "message",
+			message: {
+				role: "assistant",
+				provider: "p",
+				model: "m4",
+				stopReason: "stop",
+				usage: { totalTokens: 10, cost: { total: 0 } },
+				content: [{ type: "text", text: "y".repeat(5_000) }],
+			},
+		}),
 	);
 	const longMessage = readSessionSummary(longPath);
 	assert(
@@ -684,6 +694,7 @@ try {
 		{ pane_id: "w1:p11", workspace_id: "w1" },
 		{ pane_id: "w1:p12", workspace_id: "w1" },
 		{ pane_id: "w1:p13", workspace_id: "w1" },
+		{ pane_id: "w1:p9", workspace_id: "w1" },
 	);
 	snapshot.agents.push(
 		{
@@ -703,6 +714,15 @@ try {
 			agent_status: "idle",
 			agent_session: { value: join(scratch, "gone.jsonl") },
 			cwd: "/repo/other",
+		},
+		{
+			pane_id: "w1:p9",
+			workspace_id: "w1",
+			agent: "pi",
+			name: "long-one",
+			agent_status: "idle",
+			agent_session: { value: longPath },
+			cwd: "/repo/long",
 		},
 	);
 	worktreeList = [
@@ -779,6 +799,34 @@ try {
 	);
 	assert(detail.includes(strings().viewBranch) && detail.includes("feat/view"), "the detail view names the worktree branch");
 	assert(detail.split("w1:p11").length - 1 === 1, `the detail header names the pane id once: ${detail}`);
+
+	// The list window has to follow the selection. The first row is the calling
+	// pane, and a short pane must not scroll it off before it can be selected back
+	// into view; the last row has to be reachable too.
+	const windowOverlay = new FleetViewOverlay(client, strings(), { cwd: "/repo", selfPaneId: "w1:p11", models });
+	windowOverlay.attach({ terminal: { rows: 12, columns: width }, requestRender: () => {} } as never, theme as never, () => {});
+	await windowOverlay.refresh();
+	assert(windowOverlay.render(width).join("\n").includes("> w1:p11"), "a short window still shows the selected first row");
+	for (let index = 0; index < 40; index += 1) windowOverlay.handleInput("\x1b[B");
+	const lastPane = fleetRows.at(-1)!.paneId;
+	assert(
+		windowOverlay.render(width).join("\n").includes(`> ${lastPane}`),
+		`a short window follows the selection to the last row (${lastPane})`,
+	);
+
+	// Scrolling counts the lines render actually wrapped. The overlay is 90% of the
+	// terminal, so a wider terminal width would underestimate the wrapped lines and
+	// leave the top of the detail unreachable. Rendering at 54 with a 80-column
+	// terminal is that case: the model line is at the top.
+	const scrollOverlay = new FleetViewOverlay(client, strings(), { cwd: "/repo", selfPaneId: "w1:p11", models });
+	scrollOverlay.attach({ terminal: { rows: 20, columns: 80 }, requestRender: () => {} } as never, theme as never, () => {});
+	await scrollOverlay.refresh();
+	for (let index = 0; index < 40; index += 1) scrollOverlay.handleInput("\x1b[B");
+	scrollOverlay.handleInput("\r");
+	scrollOverlay.render(54);
+	for (let index = 0; index < 60; index += 1) scrollOverlay.handleInput("\x1b[5~");
+	const scrolled = scrollOverlay.render(54).join("\n");
+	assert(scrolled.includes(strings().viewModel), `the detail scrolls back to the model line: ${scrolled.slice(0, 200)}`);
 
 	// ------------------------------------------------------------ recipes
 

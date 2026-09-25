@@ -618,12 +618,16 @@ worktree の branch、実行中のツール（**直近**の assistant メッセ�
 
 - セッション末尾の読み取り、上限（バイト・行・1 メッセージの文字）、`truncated` の伝播、近似の
   `≥`、tool call の抽出、agent のいない pane と読めないセッションの行、`self` の印と並び、一覧の
-  列順（発話が agent 名・状態より前にあること）と pane id が繰り返されないこと → `selfcheck.ts`
+  列順（発話が agent 名・状態より前にあること）と pane id が繰り返されないこと、短い pane で一覧の
+  窓が選択に追従すること、詳細のスクロールが実際に折り返した幅で数えられること → `selfcheck.ts`
 - 状態の違う実 Pi セッション（idle と、`sleep` の最中の working）と agent のいない pane を混ぜて、
   一覧・詳細・`r` がそれぞれを正しく出すこと、自分の pane が出て印が付くこと、2MB を超えた実セッション
   が末尾から読まれて詳細のコストが `≥` になること → `acceptance-view.sh`（observer は全幅の
-  workspace に置く。半幅だと詳細の cwd 行が切れる。一覧は pane id と最後のユーザー発話の位置関係
-  （発話が agent 名・状態より前にあること）を見て、モデル・文脈・コストは詳細で見る）
+  workspace に置く。半幅だと行が切れる。一覧は pane id と最後のユーザー発話の位置関係（発話が
+  agent 名・状態より前にあること）と、状態が行末に来ることを見て、モデル・文脈・コストは詳細で見る）
+- 実 pane 受入の working は、observer の起動とモデル 1 ターン、2 回の選択操作をまたぐので、
+  `sleep` は秒ではなく分にしてある。折り返し行を数える詳細スクロールも含め、開いた直後に一度
+  全セッションを読むので、overlay の検査は行が出るまで待ってから始める
 - 既存の 2 つの受入試験（`acceptance.sh` 18 passed、`acceptance-fork.sh` 105 passed）が引き続き通ること
 
 ### 実 pane 受入の入口が 3 本になる理由
@@ -704,10 +708,13 @@ packages/pi-herdr-fleet/
   fork.ts              ツール `fleet_fork` とコマンド `/fleet fork` の共通実装
   review.ts            ツール `fleet_review` とコマンド `/fleet review` の共通実装
   clean.ts             ツール `fleet_clean` とコマンド `/fleet clean` の共通実装
+  session.ts           Pi セッション JSONL の末尾読みと、1 pane 分の要約（review と fleet が共有）
+  fleet.ts             フリートビュー（`/fleet view`）の収集と overlay
   selfcheck.ts         fake herdr サーバに対する、fake でしか作れない検査
-  acceptance-lib.sh    2 つの acceptance が共有する harness
+  acceptance-lib.sh    3 つの acceptance が共有する harness
   acceptance.sh        Phase 1/2 の実 pane 受入試験
   acceptance-fork.sh   Phase 3a/3b/3c の実 pane 受入試験
+  acceptance-view.sh   フリートビューの実 pane 受入試験（実モデルが要る）
   README.md
   README.ja.md
   package.json

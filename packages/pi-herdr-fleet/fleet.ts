@@ -200,6 +200,13 @@ export class FleetViewOverlay implements Component, Focusable {
 	private mode: Mode = "list";
 	private selected = 0;
 	private scroll = 0;
+	/**
+	 * The body width the last render actually used, so scrolling counts the same
+	 * wrapped lines that were drawn. The overlay is 90% of the terminal, so the
+	 * terminal's own width would overestimate it and leave the detail's top
+	 * unreachable.
+	 */
+	private bodyWidth = 24;
 	private pending = false;
 	private loaded = false;
 	private error: string | undefined;
@@ -305,7 +312,7 @@ export class FleetViewOverlay implements Component, Focusable {
 	}
 
 	private scrollBy(lines: number): void {
-		const total = this.detailLines(this.contentWidth()).length;
+		const total = this.detailLines(this.bodyWidth).length;
 		const max = Math.max(0, total - this.bodyHeight());
 		this.scroll = Math.min(max, Math.max(0, this.scroll + lines));
 		this.tui.requestRender();
@@ -315,6 +322,7 @@ export class FleetViewOverlay implements Component, Focusable {
 
 	render(width: number): string[] {
 		const inner = Math.max(24, width - 2);
+		this.bodyWidth = inner - 4;
 		this.selected = this.rows.length === 0 ? 0 : Math.min(this.selected, this.rows.length - 1);
 
 		const header = [
@@ -325,13 +333,21 @@ export class FleetViewOverlay implements Component, Focusable {
 			.filter((part): part is string => part !== undefined)
 			.join(this.theme.fg("dim", " · "));
 
-		const body = (this.mode === "detail" ? this.detailLines(inner - 4) : this.listLines(inner - 4)).map((line) =>
-			truncateToWidth(line, inner - 4),
+		const body = (this.mode === "detail" ? this.detailLines(this.bodyWidth) : this.listLines(this.bodyWidth)).map((line) =>
+			truncateToWidth(line, this.bodyWidth),
 		);
 		const bodyHeight = this.bodyHeight();
 		const maxScroll = Math.max(0, body.length - bodyHeight);
-		if (this.scroll > maxScroll) this.scroll = maxScroll;
-		const start = Math.max(0, body.length - bodyHeight - this.scroll);
+		let start: number;
+		if (this.mode === "detail") {
+			if (this.scroll > maxScroll) this.scroll = maxScroll;
+			start = Math.max(0, body.length - bodyHeight - this.scroll);
+		} else {
+			// The window follows the selection. The list can be longer than a short
+			// pane, and the first row is the calling pane: it must not scroll off
+			// while it is selected, or it can never be selected back into view.
+			start = Math.max(0, Math.min(this.selected - bodyHeight + 1, maxScroll));
+		}
 
 		const lines: string[] = [this.rule(inner, "╭", "╮")];
 		lines.push(this.frame(`  ${truncateToWidth(header, inner - 4)}`, inner));
@@ -439,10 +455,6 @@ export class FleetViewOverlay implements Component, Focusable {
 		const max = Math.max(9, Math.floor(this.tui.terminal.rows * 0.85));
 		const wanted = this.mode === "detail" ? max : Math.min(max, 8 + this.rows.length);
 		return Math.max(9, wanted);
-	}
-
-	private contentWidth(): number {
-		return Math.max(24, this.tui.terminal.columns - 6);
 	}
 
 	private rule(width: number, left: string, right: string): string {

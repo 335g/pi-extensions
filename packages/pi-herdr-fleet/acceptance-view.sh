@@ -243,8 +243,8 @@ sleep 1
 say "3. real Pi sessions: one idle, one working"
 # The subjects run with herdr's own integration loaded, so herdr learns their
 # session path — which is the only way a pane's session can reach the view.
-start_subject "the idle subject started" "$PREFIX-idle" "$IDLE_PANE" --session-dir "$SCRATCH/sessions" || exit 1
-start_subject "the working subject started" "$PREFIX-working" "$WORKING_PANE" --session-dir "$SCRATCH/sessions" || exit 1
+start_subject "the idle subject started" "$PREFIX-alpha" "$IDLE_PANE" --session-dir "$SCRATCH/sessions" || exit 1
+start_subject "the working subject started" "$PREFIX-beta" "$WORKING_PANE" --session-dir "$SCRATCH/sessions" || exit 1
 
 IDLE_SESSION="$(session_of "$IDLE_PANE")"
 WORKING_SESSION="$(session_of "$WORKING_PANE")"
@@ -303,14 +303,18 @@ check "the calling pane shows its own session" 'VIEW-SELF-DONE' "$SELF_ROW"
 IDLE_ROW="$(selected_row "$IDLE_PANE")"
 check "the idle subject is listed" "$IDLE_PANE" "$IDLE_ROW"
 check_order "the pane id comes before the last user message" "$IDLE_ROW" "$IDLE_PANE" 'VIEW-A-DONE'
-check_order "the last user message comes before the name and the state" "$IDLE_ROW" 'VIEW-A-DONE' "$PREFIX-idle"
-check "the idle subject shows its state" 'idle|done' "$IDLE_ROW"
+check_order "the last user message comes before the name and the state" "$IDLE_ROW" 'VIEW-A-DONE' "$PREFIX-alpha"
+# The state is the last field, so it is matched as `· <state>` before the frame's
+# border. Matching the word anywhere would also match the agent name, so the
+# subjects are named off the state words (-alpha / -beta) and the separator is part
+# of the pattern: only the state column can match.
+check "the idle subject shows its state at the end of the row" '· (idle|done) *│' "$IDLE_ROW"
 check "the idle subject shows its last user message" 'VIEW-A-DONE' "$IDLE_ROW"
 
 WORKING_ROW="$(selected_row "$WORKING_PANE")"
 check "the working subject is listed" "$WORKING_PANE" "$WORKING_ROW"
-check_order "the last user message comes before the name and the state" "$WORKING_ROW" 'VIEW-B-DONE' "$PREFIX-working"
-check "the working subject shows its state" 'working' "$WORKING_ROW"
+check_order "the last user message comes before the name and the state" "$WORKING_ROW" 'VIEW-B-DONE' "$PREFIX-beta"
+check "the working subject shows its state at the end of the row" '· (working) *│' "$WORKING_ROW"
 check "the working subject shows its last user message" 'VIEW-B-DONE' "$WORKING_ROW"
 
 SHELL_ROW="$(selected_row "$SHELL_PANE")"

@@ -513,7 +513,7 @@ const EN: Strings = {
 	verdictRecorded: (branch, verdict, findings) => `Recorded ${verdict} for ${branch} (${findings} findings)`,
 	notACheckout: "fleet: not inside a git checkout",
 	viewTitle: "fleet view",
-	viewCount: (count) => `${count} panes`,
+	viewCount: (count) => `${count} ${count === 1 ? "pane" : "panes"}`,
 	viewEmpty: "No panes",
 	viewLoading: "loading...",
 	viewError: (reason) => `Could not read the fleet: ${reason}`,

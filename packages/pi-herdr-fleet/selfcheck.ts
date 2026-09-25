@@ -748,6 +748,20 @@ try {
 	assert(fleetRows.some((row) => row.paneId === "w1:p1"), "every pane in the snapshot is listed");
 
 	assert(formatTokens(950) === "950" && formatTokens(12_500) === "12.5k" && formatTokens(2_500_000) === "2.5M", "tokens are shown short");
+	// The unit is chosen after rounding: 999,999 must read 1.0M, not 1000.0k, or a
+	// context near a 1M window looks over the limit. Exact outputs, so a regression
+	// in the branch fails here.
+	const nearMillion = [999, 1_000, 999_949, 999_999, 1_000_000];
+	assert(
+		nearMillion.map(formatTokens).join(",") === "999,1.0k,999.9k,1.0M,1.0M",
+		`tokens round before the unit: ${nearMillion.map(formatTokens).join(", ")}`,
+	);
+	// `1 panes` is the kind of thing only a one-pane fleet shows.
+	const savedLocale = process.env.LC_ALL;
+	process.env.LC_ALL = "en_US.UTF-8";
+	assert(strings().viewCount(1) === "1 pane" && strings().viewCount(2) === "2 panes", `EN counts one pane as a pane: ${strings().viewCount(1)}`);
+	if (savedLocale === undefined) delete process.env.LC_ALL;
+	else process.env.LC_ALL = savedLocale;
 	assert(
 		formatCost(0.001, true) === "≥$0.0010" && formatCost(0.5, false) === "$0.50" && formatCost(0, false) === "$0",
 		"a truncated cost is a lower bound and says so",

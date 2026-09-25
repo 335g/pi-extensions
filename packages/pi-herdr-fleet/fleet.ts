@@ -165,7 +165,10 @@ function branchFor(cwd: string | undefined, worktrees: WorktreeBranch[]): string
 /** `1234` -> `1.2k`, `1234567` -> `1.2M`. */
 export function formatTokens(tokens: number): string {
 	if (tokens < 1_000) return `${tokens}`;
-	if (tokens < 1_000_000) return `${(tokens / 1_000).toFixed(1)}k`;
+	// Round to the shown precision before choosing the unit: 999,950 must read
+	// 1.0M, not 1000.0k, or a context near a 1M window looks over the limit.
+	const thousands = Number((tokens / 1_000).toFixed(1));
+	if (thousands < 1_000) return `${thousands.toFixed(1)}k`;
 	return `${(tokens / 1_000_000).toFixed(1)}M`;
 }
 

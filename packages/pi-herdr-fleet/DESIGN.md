@@ -644,15 +644,18 @@ worktree の branch、実行中のツール（**直近**の assistant メッセ�
 
 3 層に分ける。**実 pane で確かめられることは acceptance に置き、fake は fake でしか作れないものに限る。**
 
-| ファイル | 行数 | 役割 |
+| ファイル | 行数（概算） | 役割 |
 |---|---|---|
-| `selfcheck.ts` | 1752 | fake herdr サーバに対する、fake でしか作れない検査 |
-| `acceptance-lib.sh` | 202 | 3 つの acceptance が共有する harness |
-| `acceptance.sh` | 210 | Phase 1/2 の実 pane 受入試験（約 30 秒） |
-| `acceptance-fork.sh` | 1280 | Phase 3a/3b/3c の実 pane 受入試験（数分） |
-| `acceptance-view.sh` | 409 | フリートビューの実 pane 受入試験（実モデルが要る） |
+| `selfcheck.ts` | 約1800 | fake herdr サーバに対する、fake でしか作れない検査 |
+| `acceptance-lib.sh` | 約200 | 3 つの acceptance が共有する harness |
+| `acceptance.sh` | 約200 | Phase 1/2 の実 pane 受入試験（約 30 秒） |
+| `acceptance-fork.sh` | 約1300 | Phase 3a/3b/3c の実 pane 受入試験（数分） |
+| `acceptance-view.sh` | 約400 | フリートビューの実 pane 受入試験（実モデルが要る） |
 
-実装（`fork.ts` 216 行 + `review.ts` 471 行 + `runs.ts` 414 行）に対して試験は大きい。リポジトリの慣例
+行数は桁を見るための概算で、厳密に合わせる対象ではない。増分ごとに正確な値に直す仕事を残さないため、
+境界の意味は持たせない。
+
+実装（`fork.ts` 約200 行 + `review.ts` 約500 行 + `runs.ts` 約400 行）に対して試験は大きい。リポジトリの慣例
 （`pi-byetheway/selfcheck.ts` 74 行）からは外れている。穴を見つけているので無駄ではないが、
 増分ごとに selfcheck +150 行 / acceptance +250 行が積み上がるペースは持続しない。増分を足すときの
 判断は 3 つ。

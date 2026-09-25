@@ -143,6 +143,7 @@ export default function (pi: ExtensionAPI) {
 	const run: CommandRunner = (command, args, options) => pi.exec(command, args, options);
 
 	let broker: ApprovalBroker | undefined;
+	let audit: AuditLog | undefined;
 	let config: Config = { notify: true };
 
 	async function openFleet(ctx: ExtensionContext): Promise<void> {
@@ -259,6 +260,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const { env, install, path, session, workspaceId } = forked.value;
+		audit?.own(workspaceId);
 		const state =
 			session === undefined ? t.forkNoStart : t.forkRunning(session.paneId, session.agent, installSummary(install, t));
 		ctx.ui.notify(t.forkCreated(forked.value.branch, path, workspaceId, state), install?.ok === false ? "warning" : "info");
@@ -406,9 +408,19 @@ export default function (pi: ExtensionAPI) {
 		// RPC and print modes have no PTY herdr can display and no terminal to
 		// draw the overlay in, so the extension stays inert there.
 		if (ctx.mode !== "tui") return;
+		// The audit log (§6) rides the broker's subscription and writes what it is
+		// given as session entries. Both live and die with the session, so a stale
+		// pane's state is never carried into the next one.
+		const log = new AuditLog(
+			(customType, data) => pi.appendEntry(customType, data),
+			client.selfPaneId(),
+			client.selfWorkspaceId(),
+		);
+		audit = log;
 		// The tools are the primary way to run the loop, so they are registered with
 		// the same guard as everything else: inside herdr, in an interactive session.
-		pi.registerTool(fleetForkTool(client, run));
+		// A fork's workspace is claimed so its panes are logged in this session only.
+		pi.registerTool(fleetForkTool(client, run, (workspaceId) => log.own(workspaceId)));
 		pi.registerTool(fleetReviewTool(client, run));
 		pi.registerTool(fleetVerdictTool(client, run, pi));
 		pi.registerTool(fleetStatusTool(run));
@@ -417,17 +429,13 @@ export default function (pi: ExtensionAPI) {
 		broker?.stop();
 		config = readConfig();
 		const t = strings();
-		// The audit log (§6) rides the broker's subscription and writes what it is
-		// given as session entries. Both live and die with the session, so a stale
-		// pane's state is never carried into the next one.
-		const audit = new AuditLog((customType, data) => pi.appendEntry(customType, data), client.selfPaneId());
 		const next = new ApprovalBroker(
 			client,
 			(entry) => {
 				if (!config.notify) return;
 				ctx.ui.notify(t.blockedNotification(entry.name ?? entry.agent ?? entry.pane_id), "warning");
 			},
-			(event) => audit.record(event),
+			(event) => log.record(event),
 		);
 		broker = next;
 		await next.start();
@@ -436,5 +444,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => {
 		broker?.stop();
 		broker = undefined;
+		audit = undefined;
 	});
 }

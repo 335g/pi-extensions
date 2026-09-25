@@ -170,7 +170,12 @@ const FORK_PARAMETERS = Type.Object({
 });
 
 /** The tool the agent calls. Registered in a TUI session only, like the command. */
-export function fleetForkTool(client: HerdrClient, run: CommandRunner): ToolDefinition<typeof FORK_PARAMETERS> {
+export function fleetForkTool(
+	client: HerdrClient,
+	run: CommandRunner,
+	/** Told the created workspace, so the caller's audit log can claim it. */
+	onForked?: (workspaceId: string) => void,
+): ToolDefinition<typeof FORK_PARAMETERS> {
 	return {
 		name: "fleet_fork",
 		label: "Fleet fork",
@@ -196,6 +201,7 @@ export function fleetForkTool(client: HerdrClient, run: CommandRunner): ToolDefi
 			// A tool reports failure by throwing; a returned value never sets the
 			// error flag, and the model has to know the fork did not happen.
 			if (!forked.ok) throw new Error(forked.error);
+			onForked?.(forked.value.workspaceId);
 			return { content: [{ type: "text" as const, text: report(forked.value) }], details: forked.value };
 		},
 	};

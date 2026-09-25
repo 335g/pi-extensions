@@ -12,11 +12,13 @@
  * The entries carry `customType: "herdr-event"` and never enter the model's
  * context; they exist to be read back by a human or by search.
  *
- * Noise is the whole risk of a log like this, so it is cut three ways: only the
+ * Noise is the whole risk of a log like this, so it is cut four ways: only the
  * events worth finding are subscribed to (the broker owns the one subscription),
- * `describe` refuses the rest a second time, and a repeated state for one pane
- * is dropped — herdr re-announces a status after a reconnect, and this is a
- * history of transitions, not of re-reads.
+ * `describe` refuses the rest a second time, a repeated state for one pane is
+ * dropped — herdr re-announces a status after a reconnect, and this is a history
+ * of transitions, not of re-reads — and a pane is only written by the session
+ * that created its workspace, because herdr's stream reaches every Pi session in
+ * it and the log of one repo's fleet must not land in all the others.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -118,12 +120,29 @@ export function describe(event: HerdrEvent): AuditData | undefined {
 export class AuditLog {
 	private readonly append: EntryAppender;
 	private readonly selfPaneId: string;
+	/**
+	 * The workspaces whose panes are this session's news: its own, and the ones
+	 * it owns. herdr's event stream is global — every Pi session in it sees every
+	 * pane's transitions — so without this the log of repo A lands in every
+	 * session on the machine.
+	 */
+	private readonly owned = new Set<string>();
 	/** The last state written per pane. */
 	private readonly lastStatus = new Map<string, string>();
 
-	constructor(append: EntryAppender, selfPaneId: string) {
+	constructor(append: EntryAppender, selfPaneId: string, selfWorkspaceId?: string) {
 		this.append = append;
 		this.selfPaneId = selfPaneId;
+		if (selfWorkspaceId) this.owned.add(selfWorkspaceId);
+	}
+
+	/**
+	 * Claim a workspace this session created (a fork, a reviewer's worktree), so
+	 * its panes are logged here rather than in an unrelated session. Called after
+	 * the worktree call returned, because the workspace id only exists then.
+	 */
+	own(workspaceId: string): void {
+		if (workspaceId !== "") this.owned.add(workspaceId);
 	}
 
 	/** One event in, at most one entry out. */
@@ -134,6 +153,9 @@ export class AuditLog {
 			// This extension's own pane is the session doing the logging; its turns
 			// are already in the transcript.
 			if (entry.pane_id === this.selfPaneId) return;
+			// A pane in a workspace this session did not create is another session's
+			// news, and writing it here is the noise this filter exists to stop.
+			if (entry.workspace_id === undefined || !this.owned.has(entry.workspace_id)) return;
 			const status = entry.agent_status ?? "";
 			if (this.lastStatus.get(entry.pane_id) === status) return;
 			this.lastStatus.set(entry.pane_id, status);

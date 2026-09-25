@@ -355,6 +355,9 @@ herdr is the source of truth. The extension holds no state it cannot rebuild:
 node packages/pi-herdr-fleet/selfcheck.ts
 ```
 
+It takes about 75 seconds, not a second: the seed's give-up path pays the retry delays
+(about 62 seconds) in real time, so that `sendSeed` is checked at the interval it actually waits.
+
 Runs the transport and the broker against a fake herdr server on a temporary socket: the
 request/error/timeout degradation paths, subscription and reconnect/resync, that a refused
 subscription set is rebuilt instead of retried forever, that only other panes are listed, that

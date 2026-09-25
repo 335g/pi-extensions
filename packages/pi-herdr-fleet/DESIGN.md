@@ -456,10 +456,11 @@ ingest を遅らせるという仮説は生きている**ので、90 秒も past
 という判断も、この 3 回連続が通るまで確定しない。
 
 **測れた範囲。** このブランチの `acceptance-fork.sh` は完走（105 passed / 0 failed、§11 を含む）。
-実 pane に review スコープの seed を直接送る 1 回の確認も、seed 34018 文字（このブランチの
-diff 27091 文字＋作者セッション抜粋 5417 文字）が `sendSeed` ok で、受信側のセッション JSONL に
-本文が届いた。**ただしこのブランチの diff は 27091 文字で、以前失敗した 60000 文字の diff より
-小さい。** このリポジトリのどのブランチでも 60000 文字の diff は作れないので、失敗した大きさそのもの
+実 pane に review スコープの seed を直接送る 1 回の確認も、seed 34018 文字が `sendSeed` ok で、
+受信側のセッション JSONL に本文が届いた。34018 は、1f8910c 時点の `git diff main...HEAD`
+27091 文字、作者セッション抜粋 5417 文字、残りの 1510 文字（scope のテンプレートとタスク本文）の
+合計。**ただしその diff は以前失敗した 60000 文字の diff には届かない**（1f8910c 時点で
+27091 文字）。 このリポジトリのどのブランチでも 60000 文字の diff は作れないので、失敗した大きさそのもの
 での確認にはなっていない。
 
 #### 差し戻し
@@ -606,6 +607,8 @@ packages/pi-herdr-fleet/
 - `.env` と `.envrc` を持つリポジトリで worktree を切り、環境変数が引き継がれること
 - 元の `.envrc` が allow されていない場合、新しい worktree で allow しないこと
 - `tsc --noEmit` が通ること
+- `node packages/pi-herdr-fleet/selfcheck.ts` が通ること。**約 75 秒かかる**: seed の give-up
+  経路が retry の待ち約 62 秒を実時間で払うため
 
 実 pane の受入試験は `packages/pi-herdr-fleet/acceptance.sh`。subject（`report-agent` で
 blocked にした shell）・observer（この拡張を読み込んだ Pi）・呼び出し元の 3 pane を作り、

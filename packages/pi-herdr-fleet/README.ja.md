@@ -341,6 +341,9 @@ review し、merge し、そのまま後始末できる。
 node packages/pi-herdr-fleet/selfcheck.ts
 ```
 
+**約 75 秒かかる**（一瞬ではない）。seed の give-up 経路が retry の待ち約 62 秒を実時間で払うためで、
+`sendSeed` が実際に待つ間隔のまま検査している。
+
 一時 socket に立てた偽の herdr サーバに対して、transport とブローカーを動かす。リクエスト・エラー・
 タイムアウトの縮退、購読と再接続・再同期、購読を拒否されたときにその集合を組み直すこと、自分以外の pane
 だけが並ぶこと、blocked から外れたら行が消えること、最初の snapshot では通知せず snapshot の読み直しで

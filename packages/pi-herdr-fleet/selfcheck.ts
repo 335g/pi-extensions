@@ -37,7 +37,7 @@ import {
 	writeRun,
 } from "./runs.ts";
 import { findScope, forkScopeIds, scopeIds } from "./scopes.ts";
-import { contextTokens, readSessionSummary, readTail } from "./session.ts";
+import { SESSION_TEXT_CHARS, contextTokens, readSessionSummary, readTail } from "./session.ts";
 import {
 	type CommandResult,
 	type CommandRunner,
@@ -49,9 +49,12 @@ import {
 	startAgent,
 } from "./worktree.ts";
 
-const assert = (condition: boolean, message: string) => {
+// A declaration, not a `const` arrow: assertions need an explicit annotation on
+// the call target. `asserts condition`, so `assert(!outcome.ok, ...)` narrows
+// before the next line reads `outcome.error`.
+function assert(condition: boolean, message: string): asserts condition {
 	if (!condition) throw new Error(message);
-};
+}
 
 const unwrap = <T>(outcome: Outcome<T>, what: string): T => {
 	if (!outcome.ok) throw new Error(`${what}: ${outcome.error}`);
@@ -633,6 +636,18 @@ try {
 	assert(lineCapped.truncated && lineCapped.contextTokens === 240, `the line cap keeps the newest and flags itself: ${JSON.stringify(lineCapped)}`);
 	assert(Math.abs(lineCapped.cost - 0.002) < 1e-9, `a cut read sums only what it saw: ${lineCapped.cost}`);
 	assert(readSessionSummary(summaryPath, 8).truncated, "a tail smaller than a line is a cut read");
+	// The per-message character ceiling is a memory bound, not a `truncated` flag: one
+	// 100kB line must not become a 100kB string, and the text simply ends there.
+	const longPath = join(scratch, "fleet-long.jsonl");
+	writeFileSync(
+		longPath,
+		jsonLine({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "y".repeat(5_000) }] } }),
+	);
+	const longMessage = readSessionSummary(longPath);
+	assert(
+		longMessage.lastAssistant?.length === SESSION_TEXT_CHARS && !longMessage.truncated,
+		`a message past the character cap is cut there, and that is not the truncated flag: ${longMessage.lastAssistant?.length}`,
+	);
 	assert(contextTokens({ input: 1, output: 2, cacheRead: 3, cacheWrite: 4 }) === 10, "context falls back to the four parts summed");
 	assert(contextTokens({ totalTokens: 7, input: 1 }) === 7 && contextTokens({}) === 0, "totalTokens wins, and an empty usage is zero");
 

@@ -112,16 +112,24 @@ prompt() { # prompt <pane> <text>
 }
 
 # The overlay is a snapshot: one fetch when it opens, another on `r`. Nothing
-# here waits on a live update, because there is none. The wait is for the overlay
-# itself: `/fleet view` in the editor already contains the words, so only the
-# title line with its count proves the view is up.
+# here waits on a live update, because there is none. The wait is for the fetch
+# itself: `/fleet view` in the editor already contains the words, and the title
+# paints before the rows (the snapshot and every session tail are read on open,
+# and keys are ignored while that is in flight), so only the calling pane's row
+# proves the list is ready to be read.
 open_view() {
 	herdr pane send-text "$OBSERVER" "/fleet view" >/dev/null 2>&1
 	sleep 0.5
 	herdr pane send-keys "$OBSERVER" enter >/dev/null 2>&1
-	local deadline=$((SECONDS + 30))
+	wait_ready "$OBSERVER" 60
+}
+
+# Wait until a row for `$1` is on the overlay's screen.
+wait_ready() { # wait_ready <pane id> [seconds]
+	local deadline=$((SECONDS + ${2:-60}))
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		screen "$OBSERVER" | grep -qE 'fleet view ·' && return 0
+		screen "$OBSERVER" | grep -qE 'fleet view ·' || { sleep 1; continue; }
+		screen "$OBSERVER" | grep -qF "$1" && return 0
 		sleep 1
 	done
 	return 1
@@ -247,7 +255,11 @@ else
 fi
 
 prompt "$IDLE_PANE" "Reply with exactly: VIEW-A-DONE"
-prompt "$WORKING_PANE" "Use the bash tool to run sleep 45, then reply with exactly: VIEW-B-DONE"
+# The working subject has to stay working while the observer starts, answers its
+# own turn, and then two rounds of select_pane run (up to 40 key sends each), so
+# the sleep is minutes rather than the seconds the checks themselves take. The
+# script never waits for it to finish; cleanup closes the pane.
+prompt "$WORKING_PANE" "Use the bash tool to run sleep 300, then reply with exactly: VIEW-B-DONE"
 
 wait_for "the idle subject produced an assistant message" 180 has_assistant "$IDLE_SESSION"
 wait_for "the idle subject is idle again" 60 is_idle "$IDLE_PANE"
@@ -343,7 +355,7 @@ sleep 1
 
 say "7. r re-reads the snapshot"
 herdr pane send-keys "$OBSERVER" r >/dev/null 2>&1
-sleep 2
+wait_ready "$IDLE_PANE" 60
 REFRESHED="$(screen "$OBSERVER")"
 check "the view is still up after r" 'fleet view ·' "$REFRESHED"
 check "the rows came back" "$IDLE_PANE" "$REFRESHED"
@@ -366,7 +378,7 @@ PY
 	SIZE="$(wc -c <"$IDLE_SESSION" | tr -d ' ')"
 	check "the session is now past 2MB" '^[0-9]{7,}$' "$SIZE"
 	herdr pane send-keys "$OBSERVER" r >/dev/null 2>&1
-	sleep 3
+	wait_ready "$IDLE_PANE" 60
 	BIG_ROW="$(selected_row "$IDLE_PANE")"
 	check "the newest user message still shows after the cut" 'VIEW-A-DONE' "$BIG_ROW"
 	# The cost moved to the detail with the rest of the numbers; the `≥` is there.

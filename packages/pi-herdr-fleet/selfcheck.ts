@@ -380,7 +380,7 @@ try {
 
 	const notified: string[] = [];
 	const auditEntries: { type: string; data: ReturnType<typeof describe> }[] = [];
-	const audit = new AuditLog((type, data) => auditEntries.push({ type, data }), "w1:p1");
+	const audit = new AuditLog((type, data) => auditEntries.push({ type, data }), "w1:p1", "w1");
 	const broker = new ApprovalBroker(client, (entry) => notified.push(entry.pane_id), (event) => audit.record(event));
 	const byId = () => broker.entries().map((entry) => entry.pane_id).join();
 
@@ -485,6 +485,21 @@ try {
 	]) {
 		assert(describe({ event: ignored, data: { pane_id: "w6:p1", agent_status: "blocked" } }) === undefined, `${ignored} must not become an entry`);
 	}
+
+	// A pane in a workspace this session never created is another session's news.
+	// Every Pi session in herdr sees every pane's transitions, so without this the
+	// log of one repo's fleet lands in every unrelated session on the machine.
+	auditEntries.length = 0;
+	push("pane.agent_status_changed", { pane_id: "w9:p1", workspace_id: "w9", agent_status: "working" });
+	await settle();
+	assert(auditEntries.length === 0, `another session's pane must not be logged: ${JSON.stringify(auditEntries)}`);
+	audit.own("w9");
+	push("pane.agent_status_changed", { pane_id: "w9:p1", workspace_id: "w9", agent_status: "working" });
+	await settle();
+	assert(
+		auditEntries.map((entry) => entry.data?.summary).join(" | ") === "w9:p1 working",
+		`a claimed workspace's panes are logged in this session: ${JSON.stringify(auditEntries)}`,
+	);
 
 	// Through the broker: the audit rides the one subscription, so a written
 	// entry is proof that the event travelled the real path.

@@ -4,6 +4,26 @@
 
 英語版は [README.md](./README.md)。
 
+## インストール
+
+このチェックアウトの拡張をまとめて入れる:
+
+```sh
+pi install ./                       # このリポジトリの中で
+pi install /path/to/pi-extensions   # どこからでも
+```
+
+1 パッケージだけ入れる:
+
+```sh
+pi install ./packages/pi-answer
+```
+
+ルートの `package.json` が `pi.extensions` に `packages/*/index.ts`、`packages/*/src/index.ts`、
+`packages/*/src/extension.ts` を並べているので、リポジトリのルートを入れると各パッケージが TypeScript の
+ソースのまま読み込まれる。ビルドは要らない（`pi-autocommit` 自身の manifest は `dist/index.js` を指すので、
+このパッケージだけを単体で入れる場合は `npm run build` が要る）。
+
 ## パッケージ
 
 | パッケージ | 内容 |

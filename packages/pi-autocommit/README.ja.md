@@ -48,16 +48,25 @@ pi install @335g/pi-autocommit
    ```
    wip(checkpoint): auto-commit at turn N
    ```
-2. **`turn_end`（まとめて整理）** — 未整理の checkpoint が 5 件に達したら、その場で整理します（`organiseMode: "auto"` のときのみ）。ユーザーの追加指示でループが長引いても、整理対象が大きくなりすぎて分割できなくなることはありません。
-3. **`agent_end`** — エージェントループ終了時に残りの checkpoint（最大 4 件）を soft reset し、LLM に結合差分を論理的な Conventional Commits に分割させます。各論理グループを順にステージしてコミットします。`organiseMode: "picker"` ではこの前にコミットピッカーを表示して範囲を手で選ばせ、`"review"` では加えてファイルの分割を編集させ、各コミットメッセージを確定前に確認させます。この 2 つのモードでは途中のポップアップを避けるため、まとめ整理は行いません。
+2. **区切りのタイミング** — ひとまとまりの作業が終わる 2 つの時点で、未整理のチェックポイントを整理します: ユーザーが新しい指示を送ったとき（`input` イベント。実行中にキューされた追加指示も含む）と `agent_end`。soft reset → LLM で論理的な Conventional Commits に分割 → グループごとにコミット。追加指示でループが長引いても、タスクごとに整理されるので全タスク分が 1 つの巨大な差分になりません。実行中の軌道修正（`streamingBehavior: "steer"`）では発動しません（修正をすぐモデルに届けるため）。`organiseMode: "picker"` では `agent_end` の整理がコミットピッカーで止まり、`"review"` では加えてファイルの分割を編集させ各メッセージを確定前に確認させます。この 2 つのモードでは途中のポップアップを避けるため、実行中の整理は行いません。
+
+境界が一度も来ない実行（1 つの長いプロンプト、push なし、追加指示なし）も分割します: 未整理が 10 件に達するたびに `turn_end` で整理するため、40 ターンの実行は 1 つの巨大な差分ではなく 4 つのまとまったバッチになります。
+
+### タスク境界
+
+1 つのプロンプトで複数の作業を頼むことがあります（「X を追加、Y を修正、docs を更新」）。エージェントはその間で止まりません。1 項目目が終わったという証拠はエージェント自身のターンだけなので、`detectTaskBoundary` は毎 `turn_end` で短い分類呼び出しを行います: ユーザーの依頼、そのターンのテキスト、そのターンで変更したファイル。依頼のまとまった 1 項目を終えた（番号付き項目を終えた場合を含む）なら `BOUNDARY`、同じ項目をまだ実装・デバッグ・調査中なら `CONTINUE` と答えます。
+
+`BOUNDARY` のときは未整理チェックポイントをその場で整理するため、3 項目のプロンプトは 1 つのバッチではなく 3 つのバッチになります。呼び出しは意図的に小さく（出力は 1 単語、入力は数千文字、モデルはコミットメッセージ用を共用）、失敗や解釈不能な応答は `CONTINUE` として扱うので、分類が壊れても勝手に履歴を分割しません。`detectTaskBoundary: false` で無効化できます。
 
 フッター表示（`[has changes]`）は未コミット変更の有無を知らせます。次のプロンプトを書く前に確認すれば、意図しないファイルの混入に気づけます。自動コミットが有効な間、フッターには整理モード（`[auto]` / `[picker]`）も併せて表示されます。
 
-有効な間、ガードがブロックするのは `bash` ツールからの 2 操作だけです: コミットコマンド（`--amend` 含む）と `git reset --hard`。コミットは checkpoint の列に別のコミットを割り込ませるため、`reset --hard` はインデックスとワーキングツリー（直前の checkpoint 以降の変更を含む）を破棄するためです。それ以外 — **push・merge・cherry-pick・rebase・add・stash・fetch** — はすべて許可され、エージェントは完了した作業をリモートに出したり、ワークツリーブランチを統合したりできます。
+有効な間、ガードがブロックするのは `bash` ツールからの 2 操作だけです: コミットコマンド（`--amend` 含む）と `git reset --hard`。コミットは checkpoint の列に別のコミットを割り込ませるため、`reset --hard` はインデックスとワーキングツリー（直前の checkpoint 以降の変更を含む）を破棄するためです。それ以外 — **merge・cherry-pick・rebase・add・stash・fetch** — はすべて許可され、エージェントはワークツリーブランチを統合したりできます。
 
-push 済みの履歴は反対側で守ります。整理は upstream 先端以前のコミットを書き換えません。checkpoint の列が upstream 先端をまたいでいる場合（実行中に push した場合）、未 push の部分だけを整理し、取り残した push 済み checkpoint の件数を通知します。それらは `wip(checkpoint)` として履歴に残ります。
+**push は先に整理してから通します。** 未整理の checkpoint がある状態でエージェントが push を実行すると、pi-autocommit はそれを一旦止め、Conventional Commits に整理してから同じ push を通します。リモートに `wip(checkpoint)` が届くことはありません。`picker` / `review` モードのとき、または整理に失敗したときは push をブロックして案内します（これらのモードは `agent_end` で人が決める前提で、実行中には判断できないため）。
 
-merge・cherry-pick・rebase で checkpoint の列の上に別のコミットが乗ると、その checkpoint は自動整理の対象外になります（`countCheckpointCommits` が別コミットで止まるため）。`/autocommit-organise <sessionId>` で整理し直せます。未整理の列は最大 5 件なので被害は小さいです。branch tip に未整理 checkpoint が残りうるワークツリーブランチの統合には、引き続き `git merge --squash` が最も安全です。
+push 済みの履歴は反対側でも守ります。整理は upstream 先端以前のコミットを書き換えません。別端末からの push などで checkpoint の列が upstream 先端をまたいでいる場合、未 push の部分だけを整理し、取り残した push 済み checkpoint の件数を通知します。それらは `wip(checkpoint)` として履歴に残ります。
+
+merge・cherry-pick・rebase で checkpoint の列の上に別のコミットが乗ると、その checkpoint は自動整理の対象外になります（`countCheckpointCommits` が別コミットで止まるため）。`/autocommit-organise <sessionId>` で整理し直せます。branch tip に未整理 checkpoint が残りうるワークツリーブランチの統合には、引き続き `git merge --squash` が最も安全です。
 
 もしマージで他セッションの未整理 checkpoint を取り込んでしまった場合（相手エージェントのクラッシュなど）は `session_start` と `agent_end` の両方で警告されます — 変更自体はツリーに入っていますが `wip(checkpoint)` が履歴に残るため、次回は `--squash` で統合してください。取り込まれた checkpoint には由来のワークツリーブランチが `Checkpoint-Branch` trailer として記録され、コミットピッカーや `/autocommit-organise` のセッション補完にも表示されるので、どの委譲ブランチ由来か判別できます。
 
@@ -86,6 +95,7 @@ merge・cherry-pick・rebase で checkpoint の列の上に別のコミットが
 | `ignoreSubmodules` | boolean | `false` | submodule 関連の親リポジトリ側の差分（gitlink 更新（mode 160000 エントリ。吸収された埋め込みリポジトリを含む）と `.gitmodules`）を自動コミットの対象外にします。checkpoint コミットも再編成もこれらのパスを記録しないため、ピン更新はユーザーの手動コミットに委ねられます。孤児コミット検出はセッション開始時の案内表示として継続します。下記の [Submodule](#submodule) を参照 |
 | `organiseMode` | string | `"auto"` | `agent_end` でどれだけ制御を渡すか。`"auto"` は無対話に整理し、`"picker"` は先にコミットピッカーを表示して範囲を手で選ばせ、`"review"` はさらにファイルの分割を編集させ、各コミットメッセージを確定前に確認させます。`/autocommit-mode` で切り替えでき、現在のモードはフッターに出ます。下記の [整理モード](#整理モード) を参照 |
 | `mergeSimilarPrevious` | boolean | `true` | チェックポイント整理時、その直下の「直前コミット群」（committer 時刻が 10 秒以内で連続する一連のコミット）のいずれかが「ほぼ同じファイルに触れている」（Jaccard 係数 ≥ 0.5）かつ「同じ Conventional Commit の type/scope」のとき、その群ごと巻き込んで再度まとめ直します。push 済みの群は書き換えず、通知のみ行います。下記の [類似コミット群への統合](#類似コミット群への統合) を参照 |
+| `detectTaskBoundary` | boolean | `true` | 毎 `turn_end` で短いモデル呼び出しを行い、そのターンが依頼の 1 項目を完了した（`BOUNDARY`）か、まだ途中（`CONTINUE`）かを判定します。`BOUNDARY` ならその場で未整理チェックポイントを整理するため、3 つ頼んだプロンプトは 3 つのバッチになります。ファイルを変更したターンごとに 1 回の小さな呼び出しで、`organiseMode: "auto"` のときのみ動作します。`false` にすると、ユーザー指示・push・`agent_end`・10 件バックストップだけになります。下記の [タスク境界](#タスク境界) を参照 |
 
 `lang` の解決優先度: 設定値がある場合はそれが最優先（固定言語は検出より優先）、なければ会話のユーザーメッセージから自動判定、それもできなければ英語。自動判定は文字種を検査します。ヒューリスティックフォールバック（LLM が利用できない場合）は日本語または英語のみで生成します。
 

@@ -39,7 +39,7 @@ pi -e ./src/extension.ts       # 単発で試す
 
 | ファイル | 役割 |
 |---|---|
-| `src/extension.ts` | 3 コマンドの登録、TUI オーバーレイ、LLM 呼び出し |
+| `src/extension.ts` | 6 コマンドの登録、下部パネル表示、LLM 呼び出し |
 | `src/turns.ts` | セッションエントリ → user/assistant の発話だけ |
 | `src/summarize.ts` | ラリー分割と要約プロンプト |
 | `src/work.ts` | 直近ラリーのツール呼び出しと結果を抽出し、作業サマリーのプロンプトを作る |

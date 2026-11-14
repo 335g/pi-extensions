@@ -6,7 +6,11 @@
     "packages/*"
   ],
   "pi": {
-    "extensions": []
+    "extensions": [
+      "./packages/*/index.ts",
+      "./packages/*/src/index.ts",
+      "./packages/*/src/extension.ts"
+    ]
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.85.1",

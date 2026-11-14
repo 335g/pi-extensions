@@ -1,0 +1,18 @@
+
+# 基本的には全てのファイルを管理しない。意図的に追加したものだけ管理する
+*
+
+# 明示的に無視するもの。基本的には不要だが、念の為追加
+.env
+node_modules
+apm_modules
+
+# 管理するもの
+!.gitignore
+!package.json
+!LICENSE
+!README.md
+!src/
+!src/**
+!test/
+!test/**

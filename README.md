@@ -5,6 +5,26 @@ under `packages/` is published separately as `@335g/pi-<name>`.
 
 [日本語](./README.ja.md)
 
+## Install
+
+Install every extension in this checkout at once:
+
+```sh
+pi install ./                       # inside this repo
+pi install /path/to/pi-extensions   # from anywhere
+```
+
+Or install one package:
+
+```sh
+pi install ./packages/pi-answer
+```
+
+The root `package.json` declares `packages/*/index.ts`, `packages/*/src/index.ts` and `packages/*/src/extension.ts`
+under `pi.extensions`, so the repo root loads every package from its TypeScript source. Nothing needs building.
+(`pi-autocommit`'s own manifest points at its built `dist/index.js`, so installing that package alone still needs
+`npm run build`.)
+
 ## Packages
 
 | Package | What it does |

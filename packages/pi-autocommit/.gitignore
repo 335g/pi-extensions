@@ -1,0 +1,15 @@
+.env
+.direnv/
+node_modules
+
+# Build output
+dist/
+
+# APM dependencies
+apm_modules/
+
+.agents
+.claude
+.pi-subagents
+
+.npmrc

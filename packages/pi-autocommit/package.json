@@ -1,0 +1,68 @@
+{
+  "name": "@335g/pi-autocommit",
+  "version": "0.2.1",
+  "description": "Auto-commit extension for pi-coding-agent (checkpoint-then-reorganise strategy)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README.ja.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "git",
+    "conventional-commits",
+    "automation",
+    "autocommit"
+  ],
+  "author": "Yoshiki Kudo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/335g/pi-autocommit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/335g/pi-autocommit/issues"
+  },
+  "homepage": "https://github.com/335g/pi-autocommit#readme",
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-tui": "^0.78.0",
+    "@types/node": "^25.9.1",
+    "@types/picomatch": "^4.0.3",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.0",
+    "typescript-language-server": "^5.3.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "picomatch": "^4.0.5"
+  }
+}

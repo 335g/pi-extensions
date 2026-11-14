@@ -1,41 +1,77 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Markdown, matchesKey, ScrollView, Text, VStack } from "@earendil-works/pi-tui";
+import { Markdown, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import { type SummaryLevel, buildPrompt, groupRallies } from "./summarize.ts";
+import { panelRows, sliceWindow } from "./panel.ts";
 import { extractTurns, formatTurns } from "./turns.ts";
 import { buildWorkPrompt, extractLastWork } from "./work.ts";
 
-type Theme = { fg(key: string, text: string): string; bold(text: string): string };
-type Tui = { requestRender(): void };
+type Theme = { fg(key: string, text: string): string; bold(text: string): string; bg(key: string, text: string): string };
+type Tui = { requestRender(): void; terminal: { rows: number } };
 
-/** VStack のまま TUI に渡す。ラップすると layout が降りず ScrollView の高さが 0 になる。 */
-class MarkdownOverlay extends VStack {
-	private readonly view: ScrollView;
+/**
+ * エディタ領域に差し込む下部パネル（overlay にしない）。
+ * 高さは render が返す行数で決まるので、本文は自分で切り出して上限を守る。
+ */
+class SummaryPanel {
+	private readonly title: string;
+	private readonly body: Markdown;
+	private readonly border: DynamicBorder;
 	private readonly tui: Tui;
+	private readonly theme: Theme;
 	private readonly done: () => void;
+	private lines: string[] = [];
+	private renderedWidth = -1;
+	private offset = 0;
 
 	constructor(title: string, body: string, theme: Theme, tui: Tui, done: () => void) {
-		const view = new ScrollView(new Markdown(body, 1, 1, getMarkdownTheme()), { scrollbar: "auto" });
-		const border = new DynamicBorder((s: string) => theme.fg("accent", s));
-		super([
-			{ component: border, basis: 1 },
-			{ component: new Text(theme.fg("accent", theme.bold(title)), 1, 0), basis: 1 },
-			{ component: view, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-			{ component: new Text(theme.fg("dim", "j/k または ↑/↓ でスクロール、Enter/Esc で閉じる"), 1, 0), basis: 1 },
-			{ component: border, basis: 1 },
-		]);
-		this.view = view;
+		this.title = theme.fg("accent", theme.bold(title));
+		this.body = new Markdown(body, 1, 1, getMarkdownTheme());
+		this.border = new DynamicBorder((s: string) => theme.fg("accent", s));
+		this.theme = theme;
 		this.tui = tui;
 		this.done = done;
 	}
 
+	render(width: number): string[] {
+		if (width !== this.renderedWidth) {
+			this.lines = this.body.render(width);
+			this.renderedWidth = width;
+		}
+		const win = sliceWindow(this.lines, this.offset, panelRows(this.tui.terminal.rows));
+		this.offset = win.offset;
+		const bar = this.border.render(width)[0] ?? "";
+		const range = this.lines.length ? `${win.offset + 1}-${win.offset + win.lines.length}/${this.lines.length}` : "";
+		const rows = [
+			bar,
+			` ${this.title}`,
+			...win.lines,
+			this.theme.fg("dim", ` ${range}  j/k・↑/↓・PgUp/PgDn でスクロール、Enter/Esc/q で閉じる`),
+			bar,
+		];
+		// チャットと地続きに見えないよう、行全体を背景色で塗る。
+		return rows.map((row) => this.theme.bg("customMessageBg", row + " ".repeat(Math.max(0, width - visibleWidth(row)))));
+	}
+
+	invalidate(): void {
+		this.renderedWidth = -1;
+		this.body.invalidate();
+	}
+
 	handleInput(data: string): void {
 		if (matchesKey(data, "escape") || matchesKey(data, "enter") || matchesKey(data, "q")) return this.done();
-		const step = matchesKey(data, "pageup") ? -10 : matchesKey(data, "pagedown") ? 10 : 0;
-		if (step) this.view.scrollBy(step);
-		else if (matchesKey(data, "up") || matchesKey(data, "k")) this.view.scrollBy(-1);
-		else if (matchesKey(data, "down") || matchesKey(data, "j")) this.view.scrollBy(1);
-		else return;
+		const page = Math.max(1, panelRows(this.tui.terminal.rows) - 1);
+		const step = matchesKey(data, "pageup")
+			? -page
+			: matchesKey(data, "pagedown")
+				? page
+				: matchesKey(data, "up") || matchesKey(data, "k")
+					? -1
+					: matchesKey(data, "down") || matchesKey(data, "j")
+						? 1
+						: 0;
+		if (!step) return;
+		this.offset += step;
 		this.tui.requestRender();
 	}
 }
@@ -45,10 +81,8 @@ const present = async (title: string, body: string, ctx: ExtensionCommandContext
 		process.stdout.write(`${body}\n`);
 		return;
 	}
-	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new MarkdownOverlay(title, body, theme as Theme, tui, done), {
-		overlay: true,
-		overlayOptions: { width: "90%", maxHeight: "90%", margin: 1 },
-	});
+	// 非 overlay: チャットの下、エディタ領域に出す（/model の選択画面と同じ）。
+	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new SummaryPanel(title, body, theme as Theme, tui as Tui, done), {});
 };
 
 const complete = async (prompt: { systemPrompt: string; user: string }, title: string, ctx: ExtensionCommandContext) => {

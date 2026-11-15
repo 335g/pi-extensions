@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { panelRows, sliceWindow } from "../src/panel.ts";
+import { boxWidth, pageTarget, panelRows, revealOffset, sliceWindow } from "../src/panel.ts";
 
 test("本文の上限は端末の 60% で、最低 3 行", () => {
 	assert.equal(panelRows(40), 24);
@@ -18,4 +18,41 @@ test("offset は 0 から最終ページに丸められる", () => {
 test("内容が上限より短いときは全体を返す", () => {
 	const lines = ["a", "b"];
 	assert.deepEqual(sliceWindow(lines, 0, 10), { lines, offset: 0 });
+});
+
+test("吹き出しの幅は端末幅に従い、76 桁で頭打ち", () => {
+	assert.equal(boxWidth(120), 76);
+	assert.equal(boxWidth(60), 60);
+	assert.equal(boxWidth(6), 10);
+});
+
+test("選択した会話が見える位置まで offset を寄せる", () => {
+	assert.equal(revealOffset({ start: 30, end: 40 }, 0, 24), 17);
+	assert.equal(revealOffset({ start: 0, end: 5 }, 10, 24), 0);
+	assert.equal(revealOffset({ start: 20, end: 23 }, 0, 24), 0);
+	assert.equal(revealOffset({ start: 0, end: 29 }, 0, 24), 0);
+	assert.equal(revealOffset(undefined, 7, 24), 7);
+});
+
+test("ページ送りは画面外に出る最初の会話を選ぶ", () => {
+	const ranges = [
+		{ start: 0, end: 4 },
+		{ start: 6, end: 10 },
+		{ start: 12, end: 16 },
+		{ start: 18, end: 22 },
+		{ start: 24, end: 28 },
+	];
+	assert.equal(pageTarget(ranges, 0, 17, 1), 3);
+	assert.equal(pageTarget(ranges, 0, 10, 1), 2);
+	assert.equal(pageTarget(ranges, 25, 10, 1), 4);
+});
+
+test("戻るページ送りは画面より上で最後の会話を選ぶ", () => {
+	const ranges = [
+		{ start: 0, end: 4 },
+		{ start: 6, end: 10 },
+		{ start: 12, end: 16 },
+	];
+	assert.equal(pageTarget(ranges, 12, 10, -1), 1);
+	assert.equal(pageTarget(ranges, 0, 10, -1), 0);
 });

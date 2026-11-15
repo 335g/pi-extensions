@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPrompt, groupRallies } from "../src/summarize.ts";
+import { buildPrompt, groupRallies, parseLowSummary } from "../src/summarize.ts";
 
 const turns = [
 	{ role: "user" as const, text: "質問1" },
@@ -28,4 +28,17 @@ test("low はラリー数と 2〜3 行指定、min は 10〜20 行指定を含�
 		assert.match(prompt.user, /\[1\] ユーザー:\n質問1/);
 		assert.match(prompt.user, /回答2/);
 	}
+});
+
+test("low の出力は role 行と見出しに分かれ、はぐれた行は直前の発話に付く", () => {
+	const parsed = parseLowSummary("### 1. パネル移動\nユーザー: 下に出して\nAI: 移した\n補足あり\n\n### 2. 色\nユーザー: 目立たせて");
+	assert.deepEqual(parsed, [
+		{ topic: "パネル移動", role: "user", text: "下に出して" },
+		{ topic: "パネル移動", role: "assistant", text: "移した\n補足あり" },
+		{ topic: "色", role: "user", text: "目立たせて" },
+	]);
+});
+
+test("role 行が無い要約は空を返す", () => {
+	assert.deepEqual(parseLowSummary("## 目的\n\n下部表示"), []);
 });

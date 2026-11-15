@@ -1,10 +1,11 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Markdown, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
-import { type SummaryLevel, buildPrompt, groupRallies } from "./summarize.ts";
-import { panelRows, sliceWindow } from "./panel.ts";
-import { extractTurns, formatTurns } from "./turns.ts";
+import { DynamicBorder, copyToClipboard } from "@earendil-works/pi-coding-agent";
+import { matchesKey } from "@earendil-works/pi-tui";
+import { type SummaryLevel, buildPrompt, groupRallies, parseLowSummary } from "./summarize.ts";
+import { type Range, pageTarget, panelRows, revealOffset, sliceWindow } from "./panel.ts";
+import { extractTurns, type Turn } from "./turns.ts";
 import { buildWorkPrompt, extractLastWork } from "./work.ts";
+import { type Card, type Content, cardsContent } from "./view.ts";
 
 type Theme = { fg(key: string, text: string): string; bold(text: string): string; bg(key: string, text: string): string };
 type Tui = { requestRender(): void; terminal: { rows: number } };
@@ -15,18 +16,22 @@ type Tui = { requestRender(): void; terminal: { rows: number } };
  */
 class SummaryPanel {
 	private readonly title: string;
-	private readonly body: Markdown;
+	private readonly content: Content;
 	private readonly border: DynamicBorder;
 	private readonly tui: Tui;
 	private readonly theme: Theme;
-	private readonly done: () => void;
+	private readonly done: (value?: string) => void;
 	private lines: string[] = [];
+	private ranges: Range[] = [];
 	private renderedWidth = -1;
+	private renderedSelected = -2;
+	private selected = 0;
 	private offset = 0;
+	private note = "";
 
-	constructor(title: string, body: string, theme: Theme, tui: Tui, done: () => void) {
+	constructor(title: string, content: Content, theme: Theme, tui: Tui, done: (value?: string) => void) {
 		this.title = theme.fg("accent", theme.bold(title));
-		this.body = new Markdown(body, 1, 1, getMarkdownTheme());
+		this.content = content;
 		this.border = new DynamicBorder((s: string) => theme.fg("accent", s));
 		this.theme = theme;
 		this.tui = tui;
@@ -34,58 +39,123 @@ class SummaryPanel {
 	}
 
 	render(width: number): string[] {
-		if (width !== this.renderedWidth) {
-			this.lines = this.body.render(width);
+		if (width !== this.renderedWidth || this.selected !== this.renderedSelected) {
+			const rendered = this.content.render(width, this.selected);
+			this.lines = rendered.lines;
+			this.ranges = rendered.ranges;
 			this.renderedWidth = width;
+			this.renderedSelected = this.selected;
 		}
 		const win = sliceWindow(this.lines, this.offset, panelRows(this.tui.terminal.rows));
 		this.offset = win.offset;
 		const bar = this.border.render(width)[0] ?? "";
-		const range = this.lines.length ? `${win.offset + 1}-${win.offset + win.lines.length}/${this.lines.length}` : "";
-		const rows = [
+		const name = this.selected >= 0 ? `${this.note || "選択"} ${this.selected + 1}/${this.ranges.length}  ` : "";
+		const range = this.lines.length ? `${win.offset + 1}-${win.offset + win.lines.length}/${this.lines.length}  ` : "";
+		return [
 			bar,
 			` ${this.title}`,
 			...win.lines,
-			this.theme.fg("dim", ` ${range}  j/k・↑/↓・PgUp/PgDn でスクロール、Enter/Esc/q で閉じる`),
+			this.theme.fg("dim", ` ${name}${range}j/k 選択、c コピー、t 分岐、Ctrl-f/b ページ、Enter/Esc/q 閉じる`),
 			bar,
 		];
-		// チャットと地続きに見えないよう、行全体を背景色で塗る。
-		return rows.map((row) => this.theme.bg("customMessageBg", row + " ".repeat(Math.max(0, width - visibleWidth(row)))));
 	}
 
 	invalidate(): void {
 		this.renderedWidth = -1;
-		this.body.invalidate();
+		this.renderedSelected = -2;
 	}
 
 	handleInput(data: string): void {
 		if (matchesKey(data, "escape") || matchesKey(data, "enter") || matchesKey(data, "q")) return this.done();
-		const page = Math.max(1, panelRows(this.tui.terminal.rows) - 1);
-		const step = matchesKey(data, "pageup")
-			? -page
-			: matchesKey(data, "pagedown")
-				? page
-				: matchesKey(data, "up") || matchesKey(data, "k")
-					? -1
-					: matchesKey(data, "down") || matchesKey(data, "j")
-						? 1
-						: 0;
-		if (!step) return;
-		this.offset += step;
+		if (matchesKey(data, "t")) {
+			const id = this.content.idAt(this.selected);
+			if (!id) {
+				this.note = "分岐不可";
+				return this.tui.requestRender();
+			}
+			return this.done(id);
+		}
+		if (matchesKey(data, "c")) {
+			const text = this.content.textAt(this.selected);
+			if (!text) return;
+			this.note = "コピー";
+			copyToClipboard(text).catch(() => {
+				this.note = "コピー失敗";
+				this.tui.requestRender();
+			});
+			return this.tui.requestRender();
+		}
+		const rows = panelRows(this.tui.terminal.rows);
+		if (matchesKey(data, "down") || matchesKey(data, "j") || matchesKey(data, "up") || matchesKey(data, "k")) {
+			if (this.ranges.length === 0) return;
+			const delta = matchesKey(data, "down") || matchesKey(data, "j") ? 1 : -1;
+			// 未選択からは 1 押し目で先頭を選ぶ。
+			this.selected = this.selected < 0 ? 0 : Math.max(0, Math.min(this.ranges.length - 1, this.selected + delta));
+			this.note = "";
+			this.offset = revealOffset(this.ranges[this.selected], this.offset, rows);
+			return this.tui.requestRender();
+		}
+		const forward = matchesKey(data, "pagedown") || matchesKey(data, "ctrl+f");
+		const back = matchesKey(data, "pageup") || matchesKey(data, "ctrl+b");
+		if (!forward && !back) return;
+		const target = pageTarget(this.ranges, this.offset, rows, forward ? 1 : -1);
+		if (target < 0) return;
+		// ページ送り先の会話を選び、その先頭を画面の先頭に置く。
+		this.selected = target;
+		this.note = "";
+		this.offset = this.ranges[target].start;
 		this.tui.requestRender();
 	}
 }
 
-const present = async (title: string, body: string, ctx: ExtensionCommandContext) => {
+const cardsText = (cards: Card[]): string => cards.map((card) => `## ${card.label}\n\n${card.text}`).join("\n\n");
+
+const present = async (title: string, cards: Card[], ctx: ExtensionCommandContext) => {
 	if (ctx.mode !== "tui") {
-		process.stdout.write(`${body}\n`);
+		process.stdout.write(`${cardsText(cards)}\n`);
 		return;
 	}
 	// 非 overlay: チャットの下、エディタ領域に出す（/model の選択画面と同じ）。
-	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new SummaryPanel(title, body, theme as Theme, tui as Tui, done), {});
+	// `t` で選んだ会話の entry id を返し、呼び出し側が /tree 相当の分岐を行う。
+	return ctx.ui.custom<string | undefined>(
+		(tui, theme, _keybindings, done) =>
+			new SummaryPanel(title, cardsContent(cards, theme), theme as Theme, tui as Tui, (value) => done(value)),
+		{},
+	);
 };
 
-const complete = async (prompt: { systemPrompt: string; user: string }, title: string, ctx: ExtensionCommandContext) => {
+/** `t` で選ばれた会話から分岐する（/tree で「before」を選ぶのと同じ）。 */
+const branchTo = async (entryId: string | undefined, ctx: ExtensionCommandContext) => {
+	if (!entryId) return;
+	try {
+		await ctx.navigateTree(entryId);
+	} catch (error) {
+		ctx.ui.notify(`分岐に失敗: ${error instanceof Error ? error.message : String(error)}`, "error");
+	}
+};
+
+const turnCards = (turns: Turn[]): Card[] =>
+	turns.map((turn) => ({ role: turn.role, label: turn.role === "user" ? "ユーザー" : "AI", text: turn.text, entryId: turn.id }));
+
+const neutralCards = (label: string, text: string): Card[] => [{ role: "neutral", label, text }];
+
+/** 要約出力をユーザー/AI の吹き出しに割る。読めなければ 1 枚の枠にまとめる。 */
+const lowCards = (text: string): Card[] => {
+	const lines = parseLowSummary(text);
+	if (lines.length === 0) return neutralCards("要約", text);
+	return lines.map((line) => ({
+		role: line.role,
+		label: line.topic ? `${line.role === "user" ? "ユーザー" : "AI"} · ${line.topic}` : line.role === "user" ? "ユーザー" : "AI",
+		text: line.text,
+	}));
+};
+
+const complete = async (
+	prompt: { systemPrompt: string; user: string },
+	title: string,
+	ctx: ExtensionCommandContext,
+	toCards: (text: string) => Card[],
+) => {
 	const model = ctx.model;
 	if (!model) {
 		ctx.ui.notify("モデルが選択されていません", "error");
@@ -110,7 +180,7 @@ const complete = async (prompt: { systemPrompt: string; user: string }, title: s
 			ctx.ui.notify("要約が空でした", "warning");
 			return;
 		}
-		await present(title, text, ctx);
+		await present(title, toCards(text), ctx);
 	} catch (error) {
 		ctx.ui.notify(`要約に失敗: ${error instanceof Error ? error.message : String(error)}`, "error");
 	} finally {
@@ -118,8 +188,13 @@ const complete = async (prompt: { systemPrompt: string; user: string }, title: s
 	}
 };
 
-const summarize = (level: SummaryLevel, turns: ReturnType<typeof extractTurns>, ctx: ExtensionCommandContext) =>
-	complete(buildPrompt(level, turns), level === "low" ? "会話ラリー（要約）" : "全体サマリー", ctx);
+const summarize = (level: SummaryLevel, turns: Turn[], ctx: ExtensionCommandContext) =>
+	complete(
+		buildPrompt(level, turns),
+		level === "low" ? "会話ラリー（要約）" : "全体サマリー",
+		ctx,
+		level === "low" ? lowCards : (text) => neutralCards("要約", text),
+	);
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("summary", {
@@ -130,7 +205,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("会話ラリーがありません", "warning");
 				return;
 			}
-			await present(`会話ラリー ${turns.length} 件`, formatTurns(turns), ctx);
+			await branchTo(await present(`会話ラリー ${turns.length} 件`, turnCards(turns), ctx), ctx);
 		},
 	});
 
@@ -142,11 +217,11 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("会話ラリーがありません", "warning");
 				return;
 			}
-			const turns = [
+			const turns: Turn[] = [
 				...last.user.map((text) => ({ role: "user" as const, text })),
 				...last.assistant.map((text) => ({ role: "assistant" as const, text })),
 			];
-			await present("直近の 1 ラリー", formatTurns(turns), ctx);
+			await branchTo(await present("直近の 1 ラリー", turnCards(turns), ctx), ctx);
 		},
 	});
 
@@ -170,7 +245,9 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("直近のツール実行がありません", "warning");
 				return;
 			}
-			await complete(buildWorkPrompt(items), `AI の作業（${items.length} ツール呼び出し）`, ctx);
+			await complete(buildWorkPrompt(items), `AI の作業（${items.length} ツール呼び出し）`, ctx, (text) =>
+				neutralCards("作業サマリー", text),
+			);
 		},
 	});
 

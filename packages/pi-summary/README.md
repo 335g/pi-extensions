@@ -19,9 +19,13 @@ Pi 拡張。現在のセッションの**ユーザーと AI の発話だけ**を
 ## インストール
 
 ```bash
-pi install /Users/335g/Dev/pi-summary
-# または
-pi install git:github.com/335g/pi-summary
+pi install @335g/pi-summary
+```
+
+リポジトリから直接入れる場合:
+
+```bash
+pi install git:github.com/335g/pi-extensions
 ```
 
 反映は `/reload`。

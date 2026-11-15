@@ -46,3 +46,31 @@ export const buildPrompt = (level: SummaryLevel, turns: Turn[]): { systemPrompt:
 		user: `${instruction.join("\n")}\n\n<log>\n${serialize(turns)}\n</log>`,
 	};
 };
+
+export type RoleLine = { topic: string; role: "user" | "assistant"; text: string };
+
+/**
+ * `/summary-low` の出力（`### 見出し` と「ユーザー: 」「AI: 」行）を role 付きに読む。
+ * 想定外の行は直前の発話に足す。role 行が 1 つも無ければ空を返す。
+ */
+export const parseLowSummary = (markdown: string): RoleLine[] => {
+	const lines: RoleLine[] = [];
+	let topic = "";
+	for (const raw of markdown.split("\n")) {
+		const line = raw.trim();
+		if (!line) continue;
+		const heading = line.match(/^#{1,6}\s*(.*)$/);
+		if (heading) {
+			topic = heading[1].replace(/^\d+[.、]\s*/, "");
+			continue;
+		}
+		const role = line.match(/^(ユーザー|AI)[:：]\s*(.*)$/);
+		if (role) {
+			lines.push({ topic, role: role[1] === "AI" ? "assistant" : "user", text: role[2] });
+			continue;
+		}
+		const last = lines.at(-1);
+		if (last) last.text = `${last.text}\n${line}`;
+	}
+	return lines;
+};

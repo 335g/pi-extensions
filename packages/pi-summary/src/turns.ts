@@ -1,7 +1,7 @@
-export type Turn = { role: "user" | "assistant"; text: string };
+export type Turn = { role: "user" | "assistant"; text: string; id?: string };
 
 type ContentBlock = { type?: string; text?: string };
-type Entry = { type?: string; message?: { role?: string; content?: unknown } };
+type Entry = { id?: string; type?: string; message?: { role?: string; content?: unknown } };
 
 /** text ブロックだけを連結する。 */
 export const textOf = (content: unknown): string => {
@@ -22,7 +22,7 @@ export const extractTurns = (entries: unknown[]): Turn[] => {
 		const role = entry.message?.role;
 		if (role !== "user" && role !== "assistant") continue;
 		const text = textOf(entry.message?.content).trim();
-		if (text) turns.push({ role, text });
+		if (text) turns.push(entry.id ? { role, text, id: entry.id } : { role, text });
 	}
 	return turns;
 };

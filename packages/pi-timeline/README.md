@@ -49,7 +49,7 @@ The plan is stored with `pi.appendEntry("pi-timeline", ...)` in the session JSON
 
 ## Limits
 
-- There is no persistent pane. Pi widgets are a single row above the editor, so detail lives behind the shortcut.
+- There is no persistent pane. It adds one row below Pi's built-in footer, so detail lives behind the shortcut.
 - No periodic reports: nothing is injected into the model. Open the view when you want it.
 - Subagent progress is not tracked. Add a row for it by hand.
 
@@ -57,5 +57,5 @@ The plan is stored with `pi.appendEntry("pi-timeline", ...)` in the session JSON
 
 ```sh
 npm test           # logic in src/timeline.ts
-node selfcheck.ts  # wiring: tool, widget, full view, restore (stub API)
+node selfcheck.ts  # wiring: tool, footer row, full view, restore (stub API)
 ```

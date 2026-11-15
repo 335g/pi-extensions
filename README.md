@@ -39,5 +39,6 @@ this repo needs `npm run build` inside that package before the root can load it.
 | [pi-autocommit](./packages/pi-autocommit/) | `@335g/pi-autocommit` | Checkpoint-then-reorganise auto-commit: every turn that changes files becomes a `wip(checkpoint)` commit, and the pending run is reorganised into logical Conventional Commits at each task boundary, before a push, and at the end of the agent loop. Commands: `/autocommit-enable`, `/autocommit-mode`, `/autocommit-organise`, `/autocommit-model`. |
 | [pi-byetheway](./packages/pi-byetheway/) | `@335g/pi-byetheway` | Side conversation space (`/btw`) that reads the session context without writing to it, plus an explicit hand-off back to the session (`ctrl+p`). |
 | [pi-summary](./packages/pi-summary/) | `@335g/pi-summary` | `/summary` shows only the user/AI turns of the current session, and summarises a comment or the work that followed it in place. |
+| [pi-timeline](./packages/pi-timeline/) | `@335g/pi-timeline` | DSH-style task timeline: a one-line widget above the prompt (progress bar, running task, elapsed time) fed by a single `timeline` tool, plus an `alt+t` full view. |
 
 Installation and usage are documented in each package's README.

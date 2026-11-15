@@ -39,5 +39,6 @@ npm から入れる場合は同梱の `dist` が使われるが、このリポ�
 | [pi-autocommit](./packages/pi-autocommit/) | `@335g/pi-autocommit` | チェックポイント方式の自動コミット。ファイルを変更したターンごとに `wip(checkpoint)` コミットを作り、タスクの区切り・push の直前・エージェントループの終了時に、未整理の分を論理的な Conventional Commits に整理する。コマンドは `/autocommit-enable`、`/autocommit-mode`、`/autocommit-organise`、`/autocommit-model`。 |
 | [pi-byetheway](./packages/pi-byetheway/) | `@335g/pi-byetheway` | セッションの内容を踏まえて質問できるが、やりとりを残さないスペース（`/btw`）。`ctrl+p` で明示的に本体セッションへ渡せる。 |
 | [pi-summary](./packages/pi-summary/) | `@335g/pi-summary` | `/summary` が現在のセッションのユーザーと AI の発話だけを表示し、コメントやその直後の作業をその場で要約する。 |
+| [pi-timeline](./packages/pi-timeline/) | `@335g/pi-timeline` | editor 上 1 行のタスク進捗 widget（進捗バー・実行中タスク・経過時間）。`timeline` ツール 1 本で更新し、`alt+t` で全画面を開く。 |
 
-インストール方法と使い方は各パッケージの README に書く（[pi-autocommit 日本語版](./packages/pi-autocommit/README.ja.md)、[pi-answer 日本語版](./packages/pi-answer/README.ja.md)、[pi-byetheway 日本語版](./packages/pi-byetheway/README.ja.md)、[pi-summary](./packages/pi-summary/README.md)）。
+インストール方法と使い方は各パッケージの README に書く（[pi-autocommit 日本語版](./packages/pi-autocommit/README.ja.md)、[pi-answer 日本語版](./packages/pi-answer/README.ja.md)、[pi-byetheway 日本語版](./packages/pi-byetheway/README.ja.md)、[pi-summary](./packages/pi-summary/README.md)、[pi-timeline 日本語版](./packages/pi-timeline/README.ja.md)）。

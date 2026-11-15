@@ -1,0 +1,6 @@
+{
+  "lang": "ja",
+  "enable": true,
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "organiseMode": "auto"
+}

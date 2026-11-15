@@ -1,11 +1,29 @@
 {
-  "name": "pi-summary",
+  "name": "@335g/pi-summary",
   "version": "0.1.0",
-  "description": "Pi extension: /summary shows only the user/AI conversation turns of the current session",
+  "description": "Pi extension: /summary shows only the user/AI conversation turns of the current session and lets you summarise them in place",
   "type": "module",
-  "keywords": ["pi-package", "pi-extension"],
-  "pi": {
-    "extensions": ["./src/extension.ts"]
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "summary",
+    "tui"
+  ],
+  "author": "Yoshiki Kudo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/335g/pi-extensions.git",
+    "directory": "packages/pi-summary"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "test": "node --test test/*.test.ts"
@@ -13,5 +31,10 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/extension.ts"
+    ]
   }
 }

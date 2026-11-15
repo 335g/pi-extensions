@@ -2,21 +2,23 @@
  * pi-timeline: DSH 公式 timeline 相当の常設タスク進捗。
  *
  * - `timeline` ツール 1 本でエージェントが計画を全置換する
- * - editor 上に 1 行 widget（進捗バー + 実行中タスク + 経過時間）
+ * - editor 下の footer に 1 行足す（組み込み footer の pwd / token / model 行の直下）
  * - `alt+t` / `/timeline` で全タスクの画面を開く
  * - 状態は `pi.appendEntry` でセッションに保存し、再開時に復元する
  *
  * 定時報告（モデルへ割り込み送信）はしない。見たい時にキーで開く。
  */
 
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { FooterComponent, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { type TUI, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { type Task, bar, elapsed, fmtDuration, glyph, lines, merge, progress, totalActive } from "./timeline.ts";
 
 const STATE = "pi-timeline";
-const WIDGET = "timeline";
 const TICK_MS = 1000;
+
+/** 組み込み footer を要求する AgentSession のうち、extension から読める部分だけを持つ代役。 */
+type FooterSession = ConstructorParameters<typeof FooterComponent>[0];
 
 const statusSchema = Type.Union([
 	Type.Literal("pending"),
@@ -47,7 +49,7 @@ const COLOR: Record<string, "success" | "accent" | "muted" | "warning"> = {
 	blocked: "warning",
 };
 
-/** widget は 1 行。狭い端末では切り詰めて、行数が増えないようにする。 */
+/** footer に足す 1 行。狭い端末では切り詰めて、行数が増えないようにする。 */
 function widgetLine(tasks: readonly Task[], now: number, theme: Theme, width: number): string[] {
 	const { done, total } = progress(tasks);
 	const running = tasks.find((t) => t.status === "active");
@@ -113,7 +115,7 @@ function viewLines(
 export default function (pi: ExtensionAPI) {
 	let tasks: Task[] = [];
 	let tui: TUI | undefined;
-	let widgetCtx: ExtensionContext | undefined;
+	let footerCtx: ExtensionContext | undefined;
 
 	const refresh = (): void => tui?.requestRender();
 
@@ -165,37 +167,55 @@ export default function (pi: ExtensionAPI) {
 		}));
 	};
 
-	/** 状態が変わったら widget を出し直す（空なら消す）。 */
-	const syncWidget = (ctx: ExtensionContext): void => {
+	/** 状態が変わったら footer を出し直す（空なら組み込みの footer に戻す）。 */
+	const syncFooter = (ctx: ExtensionContext): void => {
 		if (!ctx.hasUI) return;
 		if (!tasks.length) {
-			if (widgetCtx) {
-				widgetCtx.ui.setWidget(WIDGET, undefined);
-				widgetCtx = undefined;
+			if (footerCtx) {
+				footerCtx.ui.setFooter(undefined);
+				footerCtx = undefined;
 				tui = undefined;
 			}
 			return;
 		}
-		if (widgetCtx) {
+		if (footerCtx) {
 			refresh();
 			return;
 		}
-		widgetCtx = ctx;
-		ctx.ui.setWidget(WIDGET, (widgetTui, theme) => {
-			tui = widgetTui;
+		footerCtx = ctx;
+		ctx.ui.setFooter((footerTui, theme, footerData) => {
+			tui = footerTui;
+			// FooterComponent は AgentSession を受けるが extension の ctx には無い。
+			// 描画に必要な値だけを ctx から読み毎フレーム渡す。
+			const session = {
+				get sessionManager() {
+					return ctx.sessionManager;
+				},
+				get model() {
+					return ctx.model;
+				},
+				get state() {
+					return { model: ctx.model, thinkingLevel: ctx.thinkingLevel };
+				},
+				routedModel: undefined,
+				modelRuntime: { isUsingSubscription: () => false },
+				getContextUsage: () => ctx.getContextUsage(),
+			} as unknown as FooterSession;
+			const base = new FooterComponent(session, footerData);
 			return {
-				render: (width: number) => widgetLine(tasks, Date.now(), theme, width),
-				invalidate: () => {},
+				render: (width: number) => [...base.render(width), ...widgetLine(tasks, Date.now(), theme, width)],
+				invalidate: () => base.invalidate(),
 				dispose: () => {
-					if (tui === widgetTui) tui = undefined;
+					base.dispose();
+					if (tui === footerTui) tui = undefined;
 				},
 			};
-		}, { placement: "belowEditor" });
+		});
 	};
 
 	const save = (ctx: ExtensionContext): void => {
 		pi.appendEntry(STATE, { tasks });
-		syncWidget(ctx);
+		syncFooter(ctx);
 	};
 
 	/** ブランチ上の最後の保存を読み直す。分岐・再開・reload のすべてで同じ経路を通る。 */
@@ -207,18 +227,18 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		tasks = saved;
-		// セッションが差し替わると widget の持ち主も変わるので、登録をやり直す（同じ key は上書き）。
-		widgetCtx = undefined;
+		// セッションが差し替わると footer の持ち主も変わるので、登録をやり直す。
+		footerCtx = undefined;
 		tui = undefined;
-		syncWidget(ctx);
+		syncFooter(ctx);
 		refresh();
 	};
 
 	pi.on("session_start", (_event, ctx) => restore(ctx));
 	pi.on("session_tree", (_event, ctx) => restore(ctx));
 	pi.on("session_shutdown", () => {
-		if (widgetCtx) widgetCtx.ui.setWidget(WIDGET, undefined);
-		widgetCtx = undefined;
+		if (footerCtx) footerCtx.ui.setFooter(undefined);
+		footerCtx = undefined;
 		tui = undefined;
 	});
 

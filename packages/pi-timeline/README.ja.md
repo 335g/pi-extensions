@@ -51,7 +51,7 @@ pi install @335g/pi-timeline
 
 ## 制約
 
-- 常設ペインは無い。pi の widget は editor の上 1 行なので、詳細はショートカットで開く前提。
+- 常設ペインは無い。組み込み footer の下に 1 行足すだけなので、詳細はショートカットで開く前提。
 - 定時報告（モデルへの割り込み送信）はしない。見たいときに開く方がトークンを使わない。
 - サブエージェントの進捗は別途。親の timeline には手で行を足す。
 
@@ -59,5 +59,5 @@ pi install @335g/pi-timeline
 
 ```sh
 npm test           # src/timeline.ts のロジック
-node selfcheck.ts  # 拡張の配線（stub API で tool / widget / 全画面 / 復元）
+node selfcheck.ts  # 拡張の配線（stub API で tool / footer 1 行 / 全画面 / 復元）
 ```

@@ -3,7 +3,7 @@ import { Markdown, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { type Range, boxWidth } from "./panel.ts";
 
 export type Role = "user" | "assistant" | "neutral";
-export type Card = { role: Role; label: string; text: string; entryId?: string };
+export type Card = { role: Role; label: string; text: string; entryId?: string; summary?: string; work?: string };
 export type Rendered = { lines: string[]; ranges: Range[] };
 export type Content = {
 	render(width: number, selected: number): Rendered;
@@ -26,11 +26,20 @@ const box = (card: Card, width: number, theme: Theme, selected: boolean): string
 	const body = new Markdown(card.text, 0, 0, getMarkdownTheme()).render(inner);
 	// 選択中は太枠。反転だと強すぎ、selectedBg だけだと弱いので枠で差を付ける。
 	const [tl, h, tr, v, bl, br] = selected ? ["┏", "━", "┓", "┃", "┗", "┛"] : ["┌", "─", "┐", "│", "└", "┘"];
-	const rows = [
-		edge(`${tl}${h}${label}${h.repeat(fill)}${tr}`),
-		...body.map((line) => `${edge(v)} ${pad(truncateToWidth(line, inner), inner)} ${edge(v)}`),
-		edge(`${bl}${h.repeat(Math.max(0, width - 2))}${br}`),
-	];
+	const content = (line: string): string => `${edge(v)} ${pad(truncateToWidth(line, inner), inner)} ${edge(v)}`;
+	const rows = [edge(`${tl}${h}${label}${h.repeat(fill)}${tr}`), ...body.map(content)];
+	// 要約は同じ枠の内側に区切り線を挟んで並べる。
+	for (const [name, text] of [
+		["要約", card.summary],
+		["作業", card.work],
+	] as const) {
+		if (!text) continue;
+		const title = ` ${name} `;
+		const rest = Math.max(0, width - 3 - visibleWidth(title));
+		rows.push(edge(`├${h}${title}${h.repeat(rest)}┤`));
+		for (const line of new Markdown(text, 0, 0, getMarkdownTheme()).render(inner)) rows.push(content(line));
+	}
+	rows.push(edge(`${bl}${h.repeat(Math.max(0, width - 2))}${br}`));
 	return rows.map(bg);
 };
 

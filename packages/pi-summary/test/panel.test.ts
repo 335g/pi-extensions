@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boxWidth, pageTarget, panelRows, revealOffset, sliceWindow } from "../src/panel.ts";
+import { boxWidth, canMove, modeForKey, pageTarget, panelRows, revealOffset, sliceWindow } from "../src/panel.ts";
 
 test("本文の上限は端末の 60% で、最低 3 行", () => {
 	assert.equal(panelRows(40), 24);
@@ -20,8 +20,8 @@ test("内容が上限より短いときは全体を返す", () => {
 	assert.deepEqual(sliceWindow(lines, 0, 10), { lines, offset: 0 });
 });
 
-test("吹き出しの幅は端末幅に従い、76 桁で頭打ち", () => {
-	assert.equal(boxWidth(120), 76);
+test("吹き出しの幅は端末幅に従い、100 桁で頭打ち", () => {
+	assert.equal(boxWidth(120), 100);
 	assert.equal(boxWidth(60), 60);
 	assert.equal(boxWidth(6), 10);
 });
@@ -55,4 +55,13 @@ test("戻るページ送りは画面より上で最後の会話を選ぶ", () =>
 	];
 	assert.equal(pageTarget(ranges, 12, 10, -1), 1);
 	assert.equal(pageTarget(ranges, 0, 10, -1), 0);
+});
+
+test("モード遷移は表の範囲だけ", () => {
+	assert.equal(canMove("rallies", "min"), true);
+	assert.equal(canMove("min", "rallies"), true);
+	assert.equal(modeForKey("m"), "min");
+	assert.equal(modeForKey("s"), "rallies");
+	assert.equal(modeForKey("l"), undefined);
+	assert.equal(modeForKey("x"), undefined);
 });

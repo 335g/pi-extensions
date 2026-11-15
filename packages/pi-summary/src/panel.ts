@@ -8,8 +8,8 @@ export const sliceWindow = (lines: string[], offset: number, rows: number): { li
 	return { lines: lines.slice(start, start + view), offset: start };
 };
 
-/** 吹き出しの幅。広い端末でも読みやすい幅に抑える。 */
-export const boxWidth = (width: number): number => Math.max(10, Math.min(width, 76));
+/** 吹き出しの幅。要約を内側に並べるぶん広めに取り、広い端末では 100 桁で頭打ち。 */
+export const boxWidth = (width: number): number => Math.max(10, Math.min(width, 100));
 
 export type Range = { start: number; end: number };
 
@@ -30,3 +30,18 @@ export const pageTarget = (ranges: Range[], offset: number, rows: number, dir: 1
 	}
 	return Math.max(0, ranges.findLastIndex((r) => r.end < offset));
 };
+
+export type Mode = "rallies" | "min";
+
+/** モードごとに遷移できる先を限定する。 */
+export const MODE_TRANSITIONS: Record<Mode, Mode[]> = {
+	rallies: ["min"],
+	min: ["rallies"],
+};
+
+/** キー → 遷移先。要約はモードではなく、表示中の一覧への差し込み。 */
+export const MODE_KEYS: Record<string, Mode> = { m: "min", s: "rallies" };
+
+export const canMove = (from: Mode, to: Mode): boolean => MODE_TRANSITIONS[from].includes(to);
+
+export const modeForKey = (key: string): Mode | undefined => MODE_KEYS[key];

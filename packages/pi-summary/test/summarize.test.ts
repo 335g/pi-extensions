@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPrompt, groupRallies, parseLowSummary } from "../src/summarize.ts";
+import { buildCommentPrompt, buildMinPrompt, groupRallies } from "../src/summarize.ts";
 
 const turns = [
 	{ role: "user" as const, text: "質問1" },
@@ -17,28 +17,18 @@ test("ラリーは user 発話で区切られ、連続する AI 発話はまと�
 	]);
 });
 
-test("low はラリー数と 2〜3 行指定、min は 10〜20 行指定を含む", () => {
-	const low = buildPrompt("low", turns);
-	const min = buildPrompt("min", turns);
-	assert.match(low.user, /2 個の会話ラリー/);
-	assert.match(low.user, /2〜3 行/);
-	assert.match(min.user, /10〜20 行/);
-	assert.match(min.user, /次にやること/);
-	for (const prompt of [low, min]) {
-		assert.match(prompt.user, /\[1\] ユーザー:\n質問1/);
-		assert.match(prompt.user, /回答2/);
-	}
+test("全体要約はラリー数と 10〜20 行指定、ログ全体を含む", () => {
+	const prompt = buildMinPrompt(turns);
+	assert.match(prompt.user, /2 個の会話ラリー/);
+	assert.match(prompt.user, /10〜20 行/);
+	assert.match(prompt.user, /次にやること/);
+	assert.match(prompt.user, /\[1\] ユーザー:\n質問1/);
+	assert.match(prompt.user, /回答2/);
 });
 
-test("low の出力は role 行と見出しに分かれ、はぐれた行は直前の発話に付く", () => {
-	const parsed = parseLowSummary("### 1. パネル移動\nユーザー: 下に出して\nAI: 移した\n補足あり\n\n### 2. 色\nユーザー: 目立たせて");
-	assert.deepEqual(parsed, [
-		{ topic: "パネル移動", role: "user", text: "下に出して" },
-		{ topic: "パネル移動", role: "assistant", text: "移した\n補足あり" },
-		{ topic: "色", role: "user", text: "目立たせて" },
-	]);
-});
-
-test("role 行が無い要約は空を返す", () => {
-	assert.deepEqual(parseLowSummary("## 目的\n\n下部表示"), []);
+test("コメント要約は箇条書きを指示し、対象の本文だけを渡す", () => {
+	const prompt = buildCommentPrompt("本文です");
+	assert.match(prompt.user, /箇条書き/);
+	assert.match(prompt.user, /<text>\n本文です\n<\/text>/);
+	assert.doesNotMatch(prompt.user, /10〜20 行/);
 });

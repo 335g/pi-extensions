@@ -190,7 +190,7 @@ export default function (pi: ExtensionAPI) {
 					if (tui === widgetTui) tui = undefined;
 				},
 			};
-		});
+		}, { placement: "belowEditor" });
 	};
 
 	const save = (ctx: ExtensionContext): void => {

@@ -15,6 +15,7 @@
 !packages/pi-autocommit/**
 !packages/pi-byetheway/**
 !packages/pi-summary/**
+!packages/pi-timeline/**
 
 # 何があっても追跡しないもの（許可ツリーの中でも効かせるため、! より下に置く）
 node_modules/

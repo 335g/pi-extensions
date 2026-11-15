@@ -1,0 +1,42 @@
+{
+  "name": "@335g/pi-timeline",
+  "version": "0.1.0",
+  "description": "Pi extension: a always-visible task timeline (progress bar, running task, elapsed time) fed by a single `timeline` tool, plus an `alt+t` full view",
+  "type": "module",
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "timeline",
+    "todo",
+    "progress",
+    "tui"
+  ],
+  "author": "Yoshiki Kudo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/335g/pi-extensions.git",
+    "directory": "packages/pi-timeline"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/extension.ts"
+    ]
+  }
+}

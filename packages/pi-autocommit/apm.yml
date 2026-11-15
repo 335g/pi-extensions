@@ -1,0 +1,12 @@
+name: skill
+version: 1.0.0
+description: APM project for skill
+author: Yoshiki Kudo
+targets:
+- agent-skills
+dependencies:
+  apm:
+  - git: mattpocock/skills
+  mcp: []
+includes: auto
+scripts: {}

@@ -18,8 +18,8 @@ const KEY_HELP: [string, string][] = [
 	["Enter / q / Esc", "閉じる"],
 ];
 
-/** 一覧の枠の幅。横に伸びないよう 62 桁で頭打ちにし、狭い端末では縮める。 */
-export const helpWidth = (columns: number | undefined): number => Math.max(24, Math.min(62, (columns ?? 80) - 4));
+/** 一覧の枠の幅。横に伸びないよう 76 桁で頭打ちにし、狭い端末では縮める。 */
+export const helpWidth = (columns: number | undefined): number => Math.max(24, Math.min(76, (columns ?? 80) - 4));
 
 /** 枠付きの一覧。width は枠を含めた全体の幅。 */
 export const helpLines = (theme: Theme, width: number): string[] => {

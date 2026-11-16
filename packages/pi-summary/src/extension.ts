@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, copyToClipboard } from "@earendil-works/pi-coding-agent";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	MODE_KEYS,
 	MODE_TRANSITIONS,
@@ -12,6 +12,8 @@ import {
 	revealOffset,
 	scrollWithin,
 	sliceWindow,
+	toggleShow,
+	type Show,
 } from "./panel.ts";
 import { buildCommentPrompt, buildMinPrompt } from "./summarize.ts";
 import { STORE, type Saved, type Store, readStore } from "./store.ts";
@@ -22,7 +24,7 @@ import { type Card, type Content, cardsContent } from "./view.ts";
 type Theme = { fg(key: string, text: string): string; bold(text: string): string; bg(key: string, text: string): string };
 type Tui = { requestRender(): void; terminal: { rows: number } };
 type View = { title: string; cards: Card[] };
-type Outcome = string | { kind: "toggle" } | undefined;
+type Outcome = string | { kind: "toggle" } | { kind: "help" } | undefined;
 type Sources = {
 	view(mode: Mode): Promise<View>;
 	comment(text: string): Promise<string>;
@@ -33,12 +35,36 @@ type Sources = {
 	save(data: Saved): void;
 };
 
-type ShowMode = "both" | "summary" | "text";
-const SHOW_MODES: ShowMode[] = ["both", "summary", "text"];
-const SHOW_LABELS: Record<ShowMode, string> = { both: "本文＋要約", summary: "要約のみ", text: "本文のみ" };
+type ShowKind = keyof Show;
+const SHOW_KEYS: Record<string, ShowKind> = { b: "text", h: "summary", w: "work" };
+const SHOW_LABELS: Record<ShowKind, string> = { text: "本文", summary: "要約", work: "作業" };
 
 const MODE_LABELS: Record<Mode, string> = { rallies: "会話", min: "全体要約" };
 const MODE_KEYS_FOR: Record<Mode, string> = { rallies: "s", min: "m" };
+
+/** `?` の一覧。1 行のヒントには入り切らないので、ここに全部書く。 */
+const KEY_HELP: [string, string][] = [
+	["j / k", "選択を上下（↑ / ↓ も同じ）"],
+	["Ctrl-f / Ctrl-b", "ページ送り（PgDn / PgUp も同じ）"],
+	["l", "選択コメントを要約して枠の内側に差し込む"],
+	["L", "未要約のコメントをまとめて要約"],
+	["i", "選択コメントの直後の作業を要約"],
+	["I", "未要約の作業をまとめて要約"],
+	["b / h / w", "本文 / 要約 / 作業の表示切替（最後の 1 つは消せない）"],
+	["c", "選択コメントをコピー"],
+	["t", "選択コメントから分岐（/tree と同じ）"],
+	["m / s", "全体要約へ / 会話へ戻る"],
+	["z", "全画面と下部パネルを切り替え"],
+	["Enter / q / Esc", "閉じる"],
+];
+
+const helpLines = (theme: Theme, width: number): string[] => [
+	theme.fg("accent", theme.bold(" pi-summary キー一覧")),
+	"",
+	...KEY_HELP.map(([key, desc]) => truncateToWidth(` ${theme.fg("accent", key.padEnd(15))}${desc}`, width)),
+	"",
+	theme.fg("dim", " 何かキーを押すと戻る"),
+];
 
 /**
  * エディタ領域に差し込む下部パネル（overlay にしない）。
@@ -64,7 +90,7 @@ class SummaryPanel {
 	private note = "";
 	private working = false;
 	private closed = false;
-	private showMode: ShowMode = "both";
+	private show: Show = { text: true, summary: true, work: true };
 	private selected = 0;
 	private offset = 0;
 	private renderedWidth = -1;
@@ -129,11 +155,12 @@ class SummaryPanel {
 			if (!card.entryId) return card;
 			const summary = summaries.get(card.entryId);
 			const work = works.get(card.entryId);
-			if (!summary && !work) return card;
-			if (this.showMode === "text") return card;
-			// 「要約のみ」は本文を差し替え、作業は区切りを付けたまま残す。
-			if (this.showMode === "summary") return { ...card, text: summary ?? "", summary: undefined, work };
-			return { ...card, summary, work };
+			// 本文を隠しても、要約も作業も無いカードは本文だけ出す。
+			const text = this.show.text || (!summary && !work) ? card.text : "";
+			const nextSummary = this.show.summary ? summary : undefined;
+			const nextWork = this.show.work ? work : undefined;
+			if (text === card.text && nextSummary === summary && nextWork === work) return card;
+			return { ...card, text, summary: nextSummary, work: nextWork };
 		});
 	}
 
@@ -172,6 +199,22 @@ class SummaryPanel {
 		];
 	}
 
+	/** 本文 / 要約 / 作業を個別に切り替える。残り 1 種だけなら消さない。 */
+	private toggle(kind: ShowKind): void {
+		const next = toggleShow(this.show, kind);
+		if (next === this.show) {
+			this.note = "表示は 1 種類必要です";
+			return this.tui.requestRender();
+		}
+		this.show = next;
+		this.note = `表示: ${(Object.keys(SHOW_LABELS) as ShowKind[])
+			.filter((k) => next[k])
+			.map((k) => SHOW_LABELS[k])
+			.join(" / ")}`;
+		this.rebuild();
+		this.tui.requestRender();
+	}
+
 	private titleLine(): string {
 		const title = this.phase === "loading" ? "要約中…" : this.phase === "error" ? "要約に失敗" : this.title;
 		return this.theme.fg("accent", this.theme.bold(`${title}  [${MODE_LABELS[this.mode]}]`));
@@ -181,7 +224,7 @@ class SummaryPanel {
 		const moves = MODE_TRANSITIONS[this.mode]
 			.map((m) => `${MODE_KEYS_FOR[m]} ${MODE_LABELS[m]}`)
 			.join(" / ");
-		return `j/k 選択、l 要約、L 全要約、i 作業、I 全作業、c コピー、t 分岐、h 本文/要約の表示切替、z 表示位置切替、Ctrl-f/b ページ、Esc 閉じる｜${moves}`;
+		return `j/k 選択、l/L 要約、i/I 作業、? キー一覧、Esc 閉じる｜${moves}`;
 	}
 
 	/** overlay は最下部 1 行（pi のフッタ）を残し、枠 4 行を引いた残りを本文に使う。 */
@@ -216,11 +259,12 @@ class SummaryPanel {
 			this.closed = true;
 			return this.done({ kind: "toggle" });
 		}
-		if (matchesKey(data, "h")) {
-			this.showMode = SHOW_MODES[(SHOW_MODES.indexOf(this.showMode) + 1) % SHOW_MODES.length];
-			this.note = `表示: ${SHOW_LABELS[this.showMode]}`;
-			this.rebuild();
-			return this.tui.requestRender();
+		if (data === "?") {
+			this.closed = true;
+			return this.done({ kind: "help" });
+		}
+		for (const [key, kind] of Object.entries(SHOW_KEYS)) {
+			if (matchesKey(data, key)) return this.toggle(kind);
 		}
 		if (this.working) return;
 		for (const [key, target] of Object.entries(MODE_KEYS)) {
@@ -419,6 +463,18 @@ const buildSources = (ctx: ExtensionCommandContext, save: (data: Saved) => void)
 	};
 };
 
+/** `?` のキー一覧を中央の overlay で出す。何かキーを押すと戻る。 */
+const showHelp = async (ctx: ExtensionCommandContext): Promise<void> => {
+	await ctx.ui.custom<void>(
+		(tui, theme, _keybindings, done) => ({
+			render: (width: number) => helpLines(theme as Theme, width).slice(0, Math.max(3, tui.terminal.rows - 3)),
+			handleInput: () => done(),
+			invalidate: () => {},
+		}),
+		{ overlay: true, overlayOptions: { anchor: "center", width: "80%", margin: 1 } },
+	);
+};
+
 /** `t` で選ばれた会話から分岐する（/tree で「before」を選ぶのと同じ）。 */
 const branchTo = async (entryId: string | undefined, ctx: ExtensionCommandContext) => {
 	if (!entryId) return;
@@ -458,6 +514,10 @@ export default function (pi: ExtensionAPI) {
 				}, overlay ? { overlay: true, overlayOptions: () => ({ anchor: "top-left", width: "100%", maxHeight: Math.max(5, (tuiRef?.terminal.rows ?? 40) - 1), margin: 0 }) } : {});
 				if (outcome && typeof outcome === "object" && outcome.kind === "toggle") {
 					overlay = !overlay;
+					continue;
+				}
+				if (outcome && typeof outcome === "object" && outcome.kind === "help") {
+					await showHelp(ctx);
 					continue;
 				}
 				// `t` で選んだ会話の entry id を返し、呼び出し側が /tree 相当の分岐を行う。

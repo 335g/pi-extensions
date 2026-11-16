@@ -14,6 +14,7 @@ import {
 	sliceWindow,
 } from "./panel.ts";
 import { buildCommentPrompt, buildMinPrompt } from "./summarize.ts";
+import { STORE, type Saved, type Store, readStore } from "./store.ts";
 import { extractTurns, type Turn } from "./turns.ts";
 import { buildWorkPrompt, extractWorkBetween } from "./work.ts";
 import { type Card, type Content, cardsContent } from "./view.ts";
@@ -27,7 +28,14 @@ type Sources = {
 	comment(text: string): Promise<string>;
 	/** 直後の作業の要約。ツール呼び出しが無ければ null。 */
 	work(startId: string, endId?: string): Promise<string | null>;
+	/** このセッションに保存済みの要約。再開時もここから引く。 */
+	store: Store;
+	save(data: Saved): void;
 };
+
+type ShowMode = "both" | "summary" | "text";
+const SHOW_MODES: ShowMode[] = ["both", "summary", "text"];
+const SHOW_LABELS: Record<ShowMode, string> = { both: "本文＋要約", summary: "要約のみ", text: "本文のみ" };
 
 const MODE_LABELS: Record<Mode, string> = { rallies: "会話", min: "全体要約" };
 const MODE_KEYS_FOR: Record<Mode, string> = { rallies: "s", min: "m" };
@@ -45,8 +53,6 @@ class SummaryPanel {
 	private overlay: boolean;
 	private border: DynamicBorder;
 	private readonly cache = new Map<Mode, View>();
-	private readonly summaries = new Map<string, string>();
-	private readonly works = new Map<string, string>();
 	private mode: Mode;
 	private title = "";
 	private cards: Card[] = [];
@@ -58,7 +64,7 @@ class SummaryPanel {
 	private note = "";
 	private working = false;
 	private closed = false;
-	private showSummaries = true;
+	private showMode: ShowMode = "both";
 	private selected = 0;
 	private offset = 0;
 	private renderedWidth = -1;
@@ -118,12 +124,16 @@ class SummaryPanel {
 
 	/** 要約はカードの内側に持たせる。差し込みで選択位置がずれない。 */
 	private decorate(cards: Card[]): Card[] {
-		if (!this.showSummaries) return cards;
+		const { summaries, works } = this.sources.store;
 		return cards.map((card) => {
 			if (!card.entryId) return card;
-			const summary = this.summaries.get(card.entryId);
-			const work = this.works.get(card.entryId);
-			return summary || work ? { ...card, summary, work } : card;
+			const summary = summaries.get(card.entryId);
+			const work = works.get(card.entryId);
+			if (!summary && !work) return card;
+			if (this.showMode === "text") return card;
+			// 「要約のみ」は本文を差し替え、作業は区切りを付けたまま残す。
+			if (this.showMode === "summary") return { ...card, text: summary ?? "", summary: undefined, work };
+			return { ...card, summary, work };
 		});
 	}
 
@@ -171,7 +181,7 @@ class SummaryPanel {
 		const moves = MODE_TRANSITIONS[this.mode]
 			.map((m) => `${MODE_KEYS_FOR[m]} ${MODE_LABELS[m]}`)
 			.join(" / ");
-		return `j/k 選択、l 要約、L 全要約、i 作業、I 全作業、c コピー、t 分岐、h 要約表示、z 表示切替、Ctrl-f/b ページ、Esc 閉じる｜${moves}`;
+		return `j/k 選択、l 要約、L 全要約、i 作業、I 全作業、c コピー、t 分岐、h 本文/要約の表示切替、z 表示位置切替、Ctrl-f/b ページ、Esc 閉じる｜${moves}`;
 	}
 
 	/** overlay は最下部 1 行（pi のフッタ）を残し、枠 4 行を引いた残りを本文に使う。 */
@@ -207,8 +217,8 @@ class SummaryPanel {
 			return this.done({ kind: "toggle" });
 		}
 		if (matchesKey(data, "h")) {
-			this.showSummaries = !this.showSummaries;
-			this.note = this.showSummaries ? "要約を表示" : "要約を隠す";
+			this.showMode = SHOW_MODES[(SHOW_MODES.indexOf(this.showMode) + 1) % SHOW_MODES.length];
+			this.note = `表示: ${SHOW_LABELS[this.showMode]}`;
 			this.rebuild();
 			return this.tui.requestRender();
 		}
@@ -277,14 +287,15 @@ class SummaryPanel {
 
 	/** 選択コメント（all なら未要約の全コメント）を箇条書きに要約して差し込む。 */
 	private async summarizeComment(all: boolean): Promise<void> {
+		const { summaries } = this.sources.store;
 		const targets = all
-			? this.cards.filter((card) => card.entryId && !this.summaries.has(card.entryId))
+			? this.cards.filter((card) => card.entryId && !summaries.has(card.entryId))
 			: [this.selectedCard()].filter((card): card is Card => Boolean(card?.entryId));
 		if (targets.length === 0) {
 			this.note = all ? "未要約のコメントはありません" : "コメントを選択してください";
 			return this.tui.requestRender();
 		}
-		if (!all && this.summaries.has(targets[0].entryId as string)) {
+		if (!all && summaries.has(targets[0].entryId as string)) {
 			this.note = "要約済み（L で未要約をまとめて）";
 			return this.tui.requestRender();
 		}
@@ -296,7 +307,8 @@ class SummaryPanel {
 				this.tui.requestRender();
 				const text = await this.sources.comment(card.text);
 				if (this.closed) return;
-				this.summaries.set(card.entryId as string, text);
+				summaries.set(card.entryId as string, text);
+				this.sources.save({ entryId: card.entryId as string, summary: text });
 			}
 			this.rebuild();
 			this.restoreSelection(selectedId);
@@ -311,14 +323,15 @@ class SummaryPanel {
 
 	/** 選択コメントの直後の作業（all なら未要約の全箇所）を要約して差し込む。 */
 	private async summarizeWork(all: boolean): Promise<void> {
+		const { works } = this.sources.store;
 		const targets = all
-			? this.cards.filter((card) => card.entryId && !this.works.has(card.entryId))
+			? this.cards.filter((card) => card.entryId && !works.has(card.entryId))
 			: [this.selectedCard()].filter((card): card is Card => Boolean(card?.entryId));
 		if (targets.length === 0) {
 			this.note = all ? "未要約の作業はありません" : "コメントを選択してください";
 			return this.tui.requestRender();
 		}
-		if (!all && this.works.has(targets[0].entryId as string)) {
+		if (!all && works.has(targets[0].entryId as string)) {
 			this.note = "作業は要約済み（I で未要約をまとめて）";
 			return this.tui.requestRender();
 		}
@@ -332,7 +345,8 @@ class SummaryPanel {
 				const text = await this.sources.work(card.entryId as string, this.nextId(card));
 				if (this.closed) return;
 				if (text) {
-					this.works.set(card.entryId as string, text);
+					works.set(card.entryId as string, text);
+					this.sources.save({ entryId: card.entryId as string, work: text });
 					done++;
 				}
 			}
@@ -386,10 +400,12 @@ const runPrompt = async (prompt: { systemPrompt: string; user: string }, ctx: Ex
 	}
 };
 
-const buildSources = (ctx: ExtensionCommandContext): Sources => {
+const buildSources = (ctx: ExtensionCommandContext, save: (data: Saved) => void): Sources => {
 	const branch = ctx.sessionManager.getBranch();
 	const turns = extractTurns(branch);
 	return {
+		store: readStore(branch),
+		save,
 		async view(mode: Mode): Promise<View> {
 			if (mode === "rallies") return { title: `会話ラリー ${turns.length} 件`, cards: turnCards(turns) };
 			return { title: "全体サマリー", cards: neutralCards("要約", await runPrompt(buildMinPrompt(turns), ctx)) };
@@ -421,7 +437,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("会話ラリーがありません", "warning");
 				return;
 			}
-			const sources = buildSources(ctx);
+			const sources = buildSources(ctx, (data) => pi.appendEntry(STORE, data));
 			if (ctx.mode !== "tui") {
 				process.stdout.write(`${cardsText((await sources.view("rallies")).cards)}\n`);
 				return;

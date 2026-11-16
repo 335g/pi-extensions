@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, copyToClipboard } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { matchesKey } from "@earendil-works/pi-tui";
 import {
 	MODE_KEYS,
 	MODE_TRANSITIONS,
@@ -15,6 +15,7 @@ import {
 	toggleShow,
 	type Show,
 } from "./panel.ts";
+import { helpLines, helpWidth } from "./help.ts";
 import { buildCommentPrompt, buildMinPrompt } from "./summarize.ts";
 import { STORE, type Saved, type Store, readStore } from "./store.ts";
 import { extractTurns, type Turn } from "./turns.ts";
@@ -22,9 +23,14 @@ import { buildWorkPrompt, extractWorkBetween } from "./work.ts";
 import { type Card, type Content, cardsContent } from "./view.ts";
 
 type Theme = { fg(key: string, text: string): string; bold(text: string): string; bg(key: string, text: string): string };
-type Tui = { requestRender(): void; terminal: { rows: number } };
+type Tui = {
+	requestRender(): void;
+	terminal: { rows: number; columns?: number };
+	showOverlay(component: Component, options?: { anchor?: string; width?: string | number; maxHeight?: number; margin?: number }): { hide(): void };
+};
+type Component = { render(width: number): string[]; invalidate(): void; handleInput(data: string): void };
 type View = { title: string; cards: Card[] };
-type Outcome = string | { kind: "toggle" } | { kind: "help" } | undefined;
+type Outcome = string | { kind: "toggle" } | undefined;
 type Sources = {
 	view(mode: Mode): Promise<View>;
 	comment(text: string): Promise<string>;
@@ -41,30 +47,6 @@ const SHOW_LABELS: Record<ShowKind, string> = { text: "本文", summary: "要約
 
 const MODE_LABELS: Record<Mode, string> = { rallies: "会話", min: "全体要約" };
 const MODE_KEYS_FOR: Record<Mode, string> = { rallies: "s", min: "m" };
-
-/** `?` の一覧。1 行のヒントには入り切らないので、ここに全部書く。 */
-const KEY_HELP: [string, string][] = [
-	["j / k", "選択を上下（↑ / ↓ も同じ）"],
-	["Ctrl-f / Ctrl-b", "ページ送り（PgDn / PgUp も同じ）"],
-	["l", "選択コメントを要約して枠の内側に差し込む"],
-	["L", "未要約のコメントをまとめて要約"],
-	["i", "選択コメントの直後の作業を要約"],
-	["I", "未要約の作業をまとめて要約"],
-	["b / h / w", "本文 / 要約 / 作業の表示切替（最後の 1 つは消せない）"],
-	["c", "選択コメントをコピー"],
-	["t", "選択コメントから分岐（/tree と同じ）"],
-	["m / s", "全体要約へ / 会話へ戻る"],
-	["z", "全画面と下部パネルを切り替え"],
-	["Enter / q / Esc", "閉じる"],
-];
-
-const helpLines = (theme: Theme, width: number): string[] => [
-	theme.fg("accent", theme.bold(" pi-summary キー一覧")),
-	"",
-	...KEY_HELP.map(([key, desc]) => truncateToWidth(` ${theme.fg("accent", key.padEnd(15))}${desc}`, width)),
-	"",
-	theme.fg("dim", " 何かキーを押すと戻る"),
-];
 
 /**
  * エディタ領域に差し込む下部パネル（overlay にしない）。
@@ -91,6 +73,7 @@ class SummaryPanel {
 	private working = false;
 	private closed = false;
 	private show: Show = { text: true, summary: true, work: true };
+	private help: { hide(): void } | undefined;
 	private selected = 0;
 	private offset = 0;
 	private renderedWidth = -1;
@@ -215,6 +198,21 @@ class SummaryPanel {
 		this.tui.requestRender();
 	}
 
+	/** キー一覧を自前の overlay で重ねる。パネルは閉じないので下のコメントが消えない。 */
+	private toggleHelp(): void {
+		if (this.help) {
+			this.help.hide();
+			this.help = undefined;
+			return this.tui.requestRender();
+		}
+		this.help = this.tui.showOverlay(new HelpOverlay(this.theme, helpWidth(this.tui.terminal.columns), () => this.toggleHelp()), {
+			anchor: "center",
+			width: helpWidth(this.tui.terminal.columns),
+			maxHeight: helpLines(this.theme, helpWidth(this.tui.terminal.columns)).length,
+			margin: 1,
+		});
+	}
+
 	private titleLine(): string {
 		const title = this.phase === "loading" ? "要約中…" : this.phase === "error" ? "要約に失敗" : this.title;
 		return this.theme.fg("accent", this.theme.bold(`${title}  [${MODE_LABELS[this.mode]}]`));
@@ -259,10 +257,7 @@ class SummaryPanel {
 			this.closed = true;
 			return this.done({ kind: "toggle" });
 		}
-		if (data === "?") {
-			this.closed = true;
-			return this.done({ kind: "help" });
-		}
+		if (data === "?") return this.toggleHelp();
 		for (const [key, kind] of Object.entries(SHOW_KEYS)) {
 			if (matchesKey(data, key)) return this.toggle(kind);
 		}
@@ -463,17 +458,28 @@ const buildSources = (ctx: ExtensionCommandContext, save: (data: Saved) => void)
 	};
 };
 
-/** `?` のキー一覧を中央の overlay で出す。何かキーを押すと戻る。 */
-const showHelp = async (ctx: ExtensionCommandContext): Promise<void> => {
-	await ctx.ui.custom<void>(
-		(tui, theme, _keybindings, done) => ({
-			render: (width: number) => helpLines(theme as Theme, width).slice(0, Math.max(3, tui.terminal.rows - 3)),
-			handleInput: () => done(),
-			invalidate: () => {},
-		}),
-		{ overlay: true, overlayOptions: { anchor: "center", width: "80%", margin: 1 } },
-	);
-};
+/** `?` の一覧。パネルの上に重ねるので、下のコメントは消えない。 */
+class HelpOverlay implements Component {
+	private theme: Theme;
+	private readonly width: number;
+	private readonly close: () => void;
+
+	constructor(theme: Theme, width: number, close: () => void) {
+		this.theme = theme;
+		this.width = width;
+		this.close = close;
+	}
+
+	render(): string[] {
+		return helpLines(this.theme, this.width);
+	}
+
+	invalidate(): void {}
+
+	handleInput(): void {
+		this.close();
+	}
+}
 
 /** `t` で選ばれた会話から分岐する（/tree で「before」を選ぶのと同じ）。 */
 const branchTo = async (entryId: string | undefined, ctx: ExtensionCommandContext) => {
@@ -514,10 +520,6 @@ export default function (pi: ExtensionAPI) {
 				}, overlay ? { overlay: true, overlayOptions: () => ({ anchor: "top-left", width: "100%", maxHeight: Math.max(5, (tuiRef?.terminal.rows ?? 40) - 1), margin: 0 }) } : {});
 				if (outcome && typeof outcome === "object" && outcome.kind === "toggle") {
 					overlay = !overlay;
-					continue;
-				}
-				if (outcome && typeof outcome === "object" && outcome.kind === "help") {
-					await showHelp(ctx);
 					continue;
 				}
 				// `t` で選んだ会話の entry id を返し、呼び出し側が /tree 相当の分岐を行う。

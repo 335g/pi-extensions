@@ -10,6 +10,7 @@ import {
 	pageTarget,
 	panelRows,
 	revealOffset,
+	scrollWithin,
 	sliceWindow,
 } from "./panel.ts";
 import { buildCommentPrompt, buildMinPrompt } from "./summarize.ts";
@@ -253,9 +254,14 @@ class SummaryPanel {
 		if (matchesKey(data, "down") || matchesKey(data, "j") || matchesKey(data, "up") || matchesKey(data, "k")) {
 			if (this.ranges.length === 0) return;
 			const delta = matchesKey(data, "down") || matchesKey(data, "j") ? 1 : -1;
-			this.selected = Math.max(0, Math.min(this.ranges.length - 1, this.selected + delta));
+			const next = Math.max(0, Math.min(this.ranges.length - 1, this.selected + delta));
+			// 選択が変わらない（末尾でさらに下、など）ときは会話の中をずらす。
+			this.offset =
+				next === this.selected
+					? scrollWithin(this.ranges[next], this.offset, rows, delta)
+					: revealOffset(this.ranges[next], this.offset, rows, delta);
+			this.selected = next;
 			this.note = "";
-			this.offset = revealOffset(this.ranges[this.selected], this.offset, rows);
 			return this.tui.requestRender();
 		}
 		const forward = matchesKey(data, "pagedown") || matchesKey(data, "ctrl+f");

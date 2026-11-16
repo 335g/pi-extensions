@@ -13,12 +13,19 @@ export const boxWidth = (width: number): number => Math.max(10, Math.min(width, 
 
 export type Range = { start: number; end: number };
 
-/** 選択中の会話が全部見えるように offset を寄せる。 */
-export const revealOffset = (range: Range | undefined, offset: number, rows: number): number => {
+/** 選択中の会話が全部見えるように offset を寄せる。窓より高い会話は dir 側の端に合わせる。 */
+export const revealOffset = (range: Range | undefined, offset: number, rows: number, dir: 1 | -1 = 1): number => {
 	if (!range) return offset;
-	if (range.end - range.start + 1 > rows || range.start < offset) return Math.max(0, range.start);
+	if (range.end - range.start + 1 > rows) return Math.max(0, dir === 1 ? range.start : range.end - rows + 1);
+	if (range.start < offset) return Math.max(0, range.start);
 	if (range.end >= offset + rows) return Math.max(0, range.end - rows + 1);
 	return offset;
+};
+
+/** 選択中の会話の中をずらす。窓より高い会話でも下端まで読めるようにする。 */
+export const scrollWithin = (range: Range | undefined, offset: number, rows: number, dir: 1 | -1): number => {
+	if (!range || range.end - range.start + 1 <= rows) return offset;
+	return Math.max(range.start, Math.min(range.end - rows + 1, offset + dir * Math.max(1, rows - 1)));
 };
 
 /** ページ送り先の会話 index。dir=1 は下（画面外に出る最初）、-1 は上（画面より上で最後）。 */

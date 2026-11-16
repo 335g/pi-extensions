@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boxWidth, canMove, modeForKey, pageTarget, panelRows, revealOffset, sliceWindow } from "../src/panel.ts";
+import { boxWidth, canMove, modeForKey, pageTarget, panelRows, revealOffset, scrollWithin, sliceWindow } from "../src/panel.ts";
 
 test("本文の上限は端末の 60% で、最低 3 行", () => {
 	assert.equal(panelRows(40), 24);
@@ -32,6 +32,24 @@ test("選択した会話が見える位置まで offset を寄せる", () => {
 	assert.equal(revealOffset({ start: 20, end: 23 }, 0, 24), 0);
 	assert.equal(revealOffset({ start: 0, end: 29 }, 0, 24), 0);
 	assert.equal(revealOffset(undefined, 7, 24), 7);
+});
+
+test("窓より高い会話は移動方向の端に寄せる", () => {
+	assert.equal(revealOffset({ start: 10, end: 49 }, 0, 24), 10);
+	assert.equal(revealOffset({ start: 10, end: 49 }, 0, 24, -1), 26);
+});
+
+test("窓より高い会話の中をずらして下端まで見せる", () => {
+	const range = { start: 10, end: 49 };
+	assert.equal(scrollWithin(range, 10, 24, 1), 26);
+	assert.equal(scrollWithin(range, 26, 24, 1), 26);
+	assert.equal(scrollWithin({ start: 10, end: 79 }, 10, 24, 1), 33);
+	assert.equal(scrollWithin({ start: 10, end: 79 }, 33, 24, -1), 10);
+});
+
+test("窓に収まる会話では中のスクロールをしない", () => {
+	assert.equal(scrollWithin({ start: 10, end: 15 }, 3, 24, 1), 3);
+	assert.equal(scrollWithin(undefined, 3, 24, 1), 3);
 });
 
 test("ページ送りは画面外に出る最初の会話を選ぶ", () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boxWidth, canMove, modeForKey, pageTarget, panelRows, revealOffset, scrollWithin, sliceWindow } from "../src/panel.ts";
+import { boxWidth, canMove, modeForKey, pageTarget, panelRows, revealOffset, scrollWithin, sliceWindow, toggleShow } from "../src/panel.ts";
 
 test("本文の上限は端末の 60% で、最低 3 行", () => {
 	assert.equal(panelRows(40), 24);
@@ -73,6 +73,15 @@ test("戻るページ送りは画面より上で最後の会話を選ぶ", () =>
 	];
 	assert.equal(pageTarget(ranges, 12, 10, -1), 1);
 	assert.equal(pageTarget(ranges, 0, 10, -1), 0);
+});
+
+test("表示は本文・要約・作業を個別に切り替え、最後の 1 種は消せない", () => {
+	const all = { text: true, summary: true, work: true };
+	assert.deepEqual(toggleShow(all, "text"), { text: false, summary: true, work: true });
+	assert.deepEqual(toggleShow(toggleShow(all, "summary"), "summary"), all);
+	const only = { text: false, summary: true, work: false };
+	assert.deepEqual(toggleShow(only, "summary"), only);
+	assert.deepEqual(toggleShow(only, "work"), { text: false, summary: true, work: true });
 });
 
 test("モード遷移は表の範囲だけ", () => {

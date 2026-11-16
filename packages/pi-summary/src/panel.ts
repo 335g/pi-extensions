@@ -40,6 +40,14 @@ export const pageTarget = (ranges: Range[], offset: number, rows: number, dir: 1
 
 export type Mode = "rallies" | "min";
 
+export type Show = { text: boolean; summary: boolean; work: boolean };
+
+/** 表示は本文・要約・作業を個別に切り替える。残り 1 種だけのときは消さない。 */
+export const toggleShow = (show: Show, kind: keyof Show): Show => {
+	const next = { ...show, [kind]: !show[kind] };
+	return next.text || next.summary || next.work ? next : show;
+};
+
 /** モードごとに遷移できる先を限定する。 */
 export const MODE_TRANSITIONS: Record<Mode, Mode[]> = {
 	rallies: ["min"],

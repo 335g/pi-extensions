@@ -3,7 +3,7 @@ import { Markdown, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { type Range, boxWidth } from "./panel.ts";
 
 export type Role = "user" | "assistant" | "neutral";
-export type Card = { role: Role; label: string; text: string; entryId?: string; summary?: string; work?: string };
+export type Card = { role: Role; label: string; text: string; entryId?: string; summary?: string; work?: string; coverage?: "adopted" | "deferred" | "dropped" };
 export type Rendered = { lines: string[]; ranges: Range[] };
 export type Content = {
 	render(width: number, selected: number): Rendered;
@@ -21,7 +21,8 @@ const box = (card: Card, width: number, theme: Theme, selected: boolean): string
 	const inner = Math.max(1, width - 4);
 	const edge = (text: string): string => theme.fg(selected ? "accent" : "border", text);
 	const bg = (text: string): string => theme.bg(selected ? "selectedBg" : CARD_BG, text);
-	const label = ` ${selected ? "▶ " : ""}${card.label} `;
+	const mark = card.coverage ? theme.fg(card.coverage === "dropped" ? "dim" : "accent", { adopted: "■", deferred: "◐", dropped: "□" }[card.coverage]) + " " : "";
+	const label = ` ${mark}${selected ? "▶ " : ""}${card.label} `;
 	const fill = Math.max(0, width - 3 - visibleWidth(label));
 	const body = new Markdown(card.text, 0, 0, getMarkdownTheme()).render(inner);
 	// 選択中は太枠。反転だと強すぎ、selectedBg だけだと弱いので枠で差を付ける。

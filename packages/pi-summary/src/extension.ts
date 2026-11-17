@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, copyToClipboard } from "@earendil-works/pi-coding-agent";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	MODE_KEYS,
 	MODE_TRANSITIONS,
@@ -16,8 +16,9 @@ import {
 	type Show,
 } from "./panel.ts";
 import { helpLines, helpWidth } from "./help.ts";
-import { buildCommentPrompt, buildMinPrompt } from "./summarize.ts";
-import { STORE, type Saved, type Store, readStore } from "./store.ts";
+import { buildAdoptPrompt, buildHandoffPrompt, buildHandoffText, computeCoverage, insertBullet, parseAdopt, parseHandoff, stripSources, type Handoff } from "./handoff.ts";
+import { buildCommentPrompt, buildMinPrompt, groupRallies } from "./summarize.ts";
+import { HANDOFF_ID, STORE, type DeferredItem, type Saved, type Store, readStore } from "./store.ts";
 import { extractTurns, type Turn } from "./turns.ts";
 import { buildWorkPrompt, extractWorkBetween } from "./work.ts";
 import { type Card, type Content, cardsContent } from "./view.ts";
@@ -29,13 +30,17 @@ type Tui = {
 	showOverlay(component: Component, options?: { anchor?: string; width?: string | number; maxHeight?: number; margin?: number }): { hide(): void };
 };
 type Component = { render(width: number): string[]; invalidate(): void; handleInput(data: string): void };
-type View = { title: string; cards: Card[] };
+type View = { title: string; cards: Card[]; handoff?: Handoff };
 type Outcome = string | { kind: "toggle" } | undefined;
 type Sources = {
 	view(mode: Mode): Promise<View>;
 	comment(text: string): Promise<string>;
 	/** 直後の作業の要約。ツール呼び出しが無ければ null。 */
 	work(startId: string, endId?: string): Promise<string | null>;
+	/** 保留項目を引き継ぎ書向けに再要約する。 */
+	adopt(item: DeferredItem): Promise<{ section: string; bullet: string }>;
+	/** 引き継ぎ書の全文をエディタで編集する。中止時は undefined。 */
+	edit(text: string): Promise<string | undefined>;
 	/** このセッションに保存済みの要約。再開時もここから引く。 */
 	store: Store;
 	save(data: Saved): void;
@@ -45,8 +50,8 @@ type ShowKind = keyof Show;
 const SHOW_KEYS: Record<string, ShowKind> = { b: "text", h: "summary", w: "work" };
 const SHOW_LABELS: Record<ShowKind, string> = { text: "本文", summary: "要約", work: "作業" };
 
-const MODE_LABELS: Record<Mode, string> = { rallies: "会話", min: "全体要約" };
-const MODE_KEYS_FOR: Record<Mode, string> = { rallies: "s", min: "m" };
+const MODE_LABELS: Record<Mode, string> = { rallies: "会話", min: "全体要約", handoff: "引き継ぎ" };
+const MODE_KEYS_FOR: Record<Mode, string> = { rallies: "s", min: "m", handoff: "s" };
 
 /**
  * エディタ領域に差し込む下部パネル（overlay にしない）。
@@ -64,6 +69,7 @@ class SummaryPanel {
 	private mode: Mode;
 	private title = "";
 	private cards: Card[] = [];
+	private handoff: Handoff | undefined;
 	private content: Content | undefined;
 	private bodyLines: string[] = [];
 	private ranges: Range[] = [];
@@ -105,7 +111,8 @@ class SummaryPanel {
 		this.mode = mode;
 		this.note = "";
 		const cached = this.cache.get(mode);
-		if (cached) {
+		// 会話は coverage マーカーが最新の引き継ぎ状態を映すため、毎回作り直す。
+		if (cached && mode !== "rallies") {
 			this.apply(cached);
 			return this.tui.requestRender();
 		}
@@ -125,6 +132,7 @@ class SummaryPanel {
 	private apply(view: View): void {
 		this.title = view.title;
 		this.cards = view.cards;
+		this.handoff = view.handoff;
 		this.selected = 0;
 		this.offset = 0;
 		this.phase = "ready";
@@ -160,7 +168,8 @@ class SummaryPanel {
 			this.renderedWidth = width;
 			this.renderedSelected = this.selected;
 		}
-		const rows = this.visibleRows();
+		const header = this.mode === "handoff" ? this.coverageHeader(width) : [];
+		const rows = Math.max(1, this.visibleRows() - header.length);
 		const win = this.phase === "ready" ? sliceWindow(this.bodyLines, this.offset, rows) : { lines: [], offset: this.offset };
 		this.offset = win.offset;
 		const body =
@@ -176,6 +185,7 @@ class SummaryPanel {
 		return [
 			this.border.render(width)[0] ?? "",
 			` ${this.titleLine()}`,
+			...header,
 			...filled,
 			this.theme.fg("dim", ` ${name}${range}${this.hint()}`),
 			this.border.render(width)[0] ?? "",
@@ -219,6 +229,7 @@ class SummaryPanel {
 	}
 
 	private hint(): string {
+		if (this.mode === "handoff") return "a 採用、d 却下、e 編集、c コピー、s 会話、? キー一覧、Esc 閉じる";
 		const moves = MODE_TRANSITIONS[this.mode]
 			.map((m) => `${MODE_KEYS_FOR[m]} ${MODE_LABELS[m]}`)
 			.join(" / ");
@@ -271,6 +282,11 @@ class SummaryPanel {
 			}
 			return void this.load(target);
 		}
+		if (this.mode === "handoff") {
+			if (matchesKey(data, "a") || matchesKey(data, "d")) return void this.actOnRetained(matchesKey(data, "a"));
+			if (matchesKey(data, "e")) return void this.editHandoff();
+			if (matchesKey(data, "c")) return void this.copyHandoff();
+		}
 		if (matchesKey(data, "l") || matchesKey(data, "shift+l") || matchesKey(data, "i") || matchesKey(data, "shift+i")) {
 			if (this.phase !== "ready") return;
 			if (this.mode !== "rallies") {
@@ -282,6 +298,10 @@ class SummaryPanel {
 			return void (work ? this.summarizeWork(all) : this.summarizeComment(all));
 		}
 		if (matchesKey(data, "t")) {
+			if (this.mode !== "rallies") {
+				this.note = "会話で分岐できます";
+				return this.tui.requestRender();
+			}
 			const id = this.content?.idAt(this.selected);
 			if (!id) {
 				this.note = "分岐不可";
@@ -405,14 +425,172 @@ class SummaryPanel {
 		const index = entryId ? this.cards.findIndex((card) => card.entryId === entryId) : -1;
 		if (index !== -1) this.selected = index;
 	}
+
+	private coverageHeader(width: number): string[] {
+		if (!this.handoff) return [];
+		const marks: Record<string, [string, string]> = {
+			adopted: ["accent", "■"],
+			deferred: ["accent", "◐"],
+			dropped: ["dim", "□"],
+		};
+		const cells: string[] = [];
+		for (let i = 1; i <= this.handoff.rallyCount; i++) {
+			const [color, ch] = marks[this.handoff.coverage.get(i) ?? "dropped"];
+			cells.push(this.theme.fg(color, ch));
+		}
+		const bar = truncateToWidth(` ${cells.join("")}`, width);
+		const legend = truncateToWidth(
+			` ${this.theme.fg("accent", "■採用済み")} ${this.theme.fg("accent", "◐保留")} ${this.theme.fg("dim", "□未採用")}`,
+			width,
+		);
+		return [bar, legend];
+	}
+
+	/** 選択中の保留項目の index（保留項目でなければ -1）。 */
+	private retainedIndex(card: Card | undefined): number {
+		if (!card?.entryId?.startsWith("retained:")) return -1;
+		return Number(card.entryId.slice("retained:".length));
+	}
+
+	private actOnRetained(adopt: boolean): void {
+		const index = this.retainedIndex(this.selectedCard());
+		if (index < 0) {
+			this.note = "保留項目を選択してください";
+			return this.tui.requestRender();
+		}
+		void (adopt ? this.adoptRetained(index) : this.dismissRetained(index));
+	}
+
+	private applyHandoff(handoff: Handoff, selected: number): void {
+		const view = handoffView(handoff);
+		this.cache.set("handoff", view);
+		this.apply(view);
+		this.selected = Math.min(selected, this.cards.length - 1);
+	}
+
+	private async adoptRetained(index: number): Promise<void> {
+		const handoff = this.handoff;
+		if (!handoff) return;
+		const item = handoff.deferred[index];
+		if (!item) return;
+		const selected = this.selected;
+		this.working = true;
+		try {
+			const { section, bullet } = await this.sources.adopt(item);
+			if (this.closed) return;
+			const bulletWithSource = `${bullet}（出典: ラリー${item.sources.join(",")}）`;
+			const text = insertBullet(handoff.text, section, bulletWithSource);
+			const deferred = handoff.deferred.filter((_, i) => i !== index);
+			this.sources.store.handoff = text;
+			this.sources.store.deferred = deferred;
+			this.sources.save({ entryId: HANDOFF_ID, handoff: text, deferred });
+			this.applyHandoff(
+				{ text, deferred, coverage: computeCoverage(handoff.rallyCount, text, deferred), rallyCount: handoff.rallyCount },
+				selected,
+			);
+			this.note = "保留項目を採用しました";
+		} catch (error) {
+			this.note = `採用に失敗: ${error instanceof Error ? error.message : String(error)}`;
+		} finally {
+			this.working = false;
+		}
+		this.tui.requestRender();
+	}
+
+	private dismissRetained(index: number): void {
+		const handoff = this.handoff;
+		if (!handoff) return;
+		const deferred = handoff.deferred.filter((_, i) => i !== index);
+		this.sources.store.deferred = deferred;
+		this.sources.save({ entryId: HANDOFF_ID, handoff: handoff.text, deferred });
+		this.applyHandoff(
+			{ ...handoff, deferred, coverage: computeCoverage(handoff.rallyCount, handoff.text, deferred) },
+			this.selected,
+		);
+		this.note = "保留項目を却下しました";
+		this.tui.requestRender();
+	}
+
+	private async editHandoff(): Promise<void> {
+		const handoff = this.handoff;
+		if (!handoff) return;
+		this.working = true;
+		try {
+			const text = await this.sources.edit(handoff.text);
+			if (this.closed) return;
+			if (text === undefined || text === handoff.text) {
+				this.note = "編集を中止しました";
+				return;
+			}
+			this.sources.store.handoff = text;
+			this.sources.save({ entryId: HANDOFF_ID, handoff: text, deferred: handoff.deferred });
+			this.applyHandoff(
+				{ ...handoff, text, coverage: computeCoverage(handoff.rallyCount, text, handoff.deferred) },
+				this.selected,
+			);
+			this.note = "引き継ぎ書を編集しました";
+		} catch (error) {
+			this.note = `編集に失敗: ${error instanceof Error ? error.message : String(error)}`;
+		} finally {
+			this.working = false;
+		}
+		this.tui.requestRender();
+	}
+
+	private copyHandoff(): void {
+		if (!this.handoff) return;
+		copyToClipboard(buildHandoffText(stripSources(this.handoff.text))).then(
+			() => {
+				this.note = "引き継ぎプロンプトをコピーしました";
+				this.tui.requestRender();
+			},
+			() => {
+				this.note = "コピーに失敗しました";
+				this.tui.requestRender();
+			},
+		);
+	}
 }
 
 const cardsText = (cards: Card[]): string => cards.map((card) => `## ${card.label}\n\n${card.text}`).join("\n\n");
 
-const turnCards = (turns: Turn[]): Card[] =>
-	turns.map((turn) => ({ role: turn.role, label: turn.role === "user" ? "ユーザー" : "AI", text: turn.text, entryId: turn.id }));
+/** 各 turn が属するラリー番号（1 始まり）。 */
+const turnRallyIndex = (turns: Turn[]): number[] => {
+	const indices: number[] = [];
+	let rally = 0;
+	for (const turn of turns) {
+		if (turn.role === "user" || rally === 0) rally++;
+		indices.push(rally);
+	}
+	return indices;
+};
+
+const turnCards = (turns: Turn[], coverage?: Handoff["coverage"]): Card[] => {
+	const indices = turnRallyIndex(turns);
+	return turns.map((turn, i) => ({
+		role: turn.role,
+		label: turn.role === "user" ? "ユーザー" : "AI",
+		text: turn.text,
+		entryId: turn.id,
+		coverage: coverage?.get(indices[i]),
+	}));
+};
 
 const neutralCards = (label: string, text: string): Card[] => [{ role: "neutral", label, text }];
+
+const handoffView = (handoff: Handoff): View => ({
+	title: `引き継ぎ ${handoff.rallyCount} ラリー`,
+	handoff,
+	cards: [
+		{ role: "neutral", label: "引き継ぎ書", text: handoff.text, entryId: "handoff" },
+		...handoff.deferred.map((item, index) => ({
+			role: "neutral" as const,
+			label: `保留 ${index + 1}`,
+			text: `**${item.summary}**\n理由: ${item.reason}\n出典: ラリー${item.sources.join(",")}`,
+			entryId: `retained:${index}`,
+		})),
+	],
+});
 
 const runPrompt = async (prompt: { systemPrompt: string; user: string }, ctx: ExtensionCommandContext): Promise<string> => {
 	const model = ctx.model;
@@ -442,12 +620,31 @@ const runPrompt = async (prompt: { systemPrompt: string; user: string }, ctx: Ex
 const buildSources = (ctx: ExtensionCommandContext, save: (data: Saved) => void): Sources => {
 	const branch = ctx.sessionManager.getBranch();
 	const turns = extractTurns(branch);
+	const rallyCount = groupRallies(turns).length;
+	const store = readStore(branch);
 	return {
-		store: readStore(branch),
+		store,
 		save,
 		async view(mode: Mode): Promise<View> {
-			if (mode === "rallies") return { title: `会話ラリー ${turns.length} 件`, cards: turnCards(turns) };
-			return { title: "全体サマリー", cards: neutralCards("要約", await runPrompt(buildMinPrompt(turns), ctx)) };
+			if (mode === "rallies") {
+				const coverage = store.handoff ? computeCoverage(rallyCount, store.handoff, store.deferred) : undefined;
+				return { title: `会話ラリー ${rallyCount} 件`, cards: turnCards(turns, coverage) };
+			}
+			if (mode === "min") return { title: "全体サマリー", cards: neutralCards("要約", await runPrompt(buildMinPrompt(turns), ctx)) };
+			if (store.handoff) {
+				return handoffView({
+					text: store.handoff,
+					deferred: store.deferred,
+					coverage: computeCoverage(rallyCount, store.handoff, store.deferred),
+					rallyCount,
+				});
+			}
+			const raw = await runPrompt(buildHandoffPrompt(turns), ctx);
+			const handoff = parseHandoff(raw, rallyCount);
+			store.handoff = handoff.text;
+			store.deferred = handoff.deferred;
+			save({ entryId: HANDOFF_ID, handoff: handoff.text, deferred: handoff.deferred });
+			return handoffView(handoff);
 		},
 		comment: (text: string) => runPrompt(buildCommentPrompt(text), ctx),
 		async work(startId: string, endId?: string): Promise<string | null> {
@@ -455,6 +652,8 @@ const buildSources = (ctx: ExtensionCommandContext, save: (data: Saved) => void)
 			if (items.length === 0) return null;
 			return runPrompt(buildWorkPrompt(items), ctx);
 		},
+		adopt: async (item: DeferredItem) => parseAdopt(await runPrompt(buildAdoptPrompt(item, turns), ctx), item.summary),
+		edit: (text: string) => ctx.ui.editor("引き継ぎ書を編集", text),
 	};
 };
 

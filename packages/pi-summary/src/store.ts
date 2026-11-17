@@ -1,22 +1,45 @@
 /** 要約をセッションに残すときの customType。 */
 export const STORE = "pi-summary";
 
-export type Saved = { entryId: string; summary?: string; work?: string };
+/** 引き継ぎ書・保留リストを保存するときの固定 entryId。 */
+export const HANDOFF_ID = "__handoff__";
+
+/** 保留リストの 1 項目。sources は 1 始まりのラリー番号。 */
+export type DeferredItem = { summary: string; reason: string; sources: number[] };
+
+export type Saved = {
+	entryId: string;
+	summary?: string;
+	work?: string;
+	/** 引き継ぎ書の本文（セッションに 1 つ）。 */
+	handoff?: string;
+	/** 保留リスト（セッションに 1 つ）。 */
+	deferred?: DeferredItem[];
+};
 
 /** entryId → 要約テキスト。会話はセッションを跨いでも id が変わらない。 */
-export type Store = { summaries: Map<string, string>; works: Map<string, string> };
+export type Store = {
+	summaries: Map<string, string>;
+	works: Map<string, string>;
+	handoff?: string;
+	deferred: DeferredItem[];
+};
 
 type Entry = { type: string; customType?: string; data?: unknown };
 
 /** ブランチ上の保存を古い順に畳み込む。同じ entryId は後の保存が勝つ。 */
 export const readStore = (entries: readonly Entry[]): Store => {
-	const store: Store = { summaries: new Map(), works: new Map() };
+	const store: Store = { summaries: new Map(), works: new Map(), deferred: [] };
 	for (const entry of entries) {
 		if (entry.type !== "custom" || entry.customType !== STORE) continue;
 		const saved = entry.data as Saved | undefined;
-		if (!saved?.entryId) continue;
-		if (saved.summary) store.summaries.set(saved.entryId, saved.summary);
-		if (saved.work) store.works.set(saved.entryId, saved.work);
+		if (!saved) continue;
+		if (saved.entryId) {
+			if (saved.summary) store.summaries.set(saved.entryId, saved.summary);
+			if (saved.work) store.works.set(saved.entryId, saved.work);
+		}
+		if (saved.handoff) store.handoff = saved.handoff;
+		if (saved.deferred) store.deferred = saved.deferred;
 	}
 	return store;
 };

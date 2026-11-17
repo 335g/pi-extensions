@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readStore } from "../src/store.ts";
+import { HANDOFF_ID, readStore, type DeferredItem } from "../src/store.ts";
 
 test("保存済みの要約と作業を entryId で引ける", () => {
 	const store = readStore([
@@ -26,4 +26,24 @@ test("同じ entryId の後の保存が勝ち、他の customType は無視す�
 	assert.equal(store.summaries.get("a"), "新しい");
 	assert.equal(store.summaries.has("b"), false);
 	assert.equal(store.summaries.size, 1);
+});
+
+test("引き継ぎ書と保留リストをセッションから読む", () => {
+	const deferred: DeferredItem[] = [{ summary: "s", reason: "r", sources: [3] }];
+	const store = readStore([
+		{ type: "custom", customType: "pi-summary", data: { entryId: HANDOFF_ID, handoff: "## 状況\n- a", deferred } },
+		{ type: "custom", customType: "pi-summary", data: { entryId: "a", summary: "要約A" } },
+	]);
+	assert.equal(store.handoff, "## 状況\n- a");
+	assert.deepEqual(store.deferred, deferred);
+	assert.equal(store.summaries.get("a"), "要約A");
+});
+
+test("後の保存の handoff が勝ち、保留リストが無ければ空", () => {
+	const store = readStore([
+		{ type: "custom", customType: "pi-summary", data: { entryId: HANDOFF_ID, handoff: "古い" } },
+		{ type: "custom", customType: "pi-summary", data: { entryId: HANDOFF_ID, handoff: "新しい" } },
+	]);
+	assert.equal(store.handoff, "新しい");
+	assert.deepEqual(store.deferred, []);
 });

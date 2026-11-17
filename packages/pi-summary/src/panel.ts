@@ -38,7 +38,7 @@ export const pageTarget = (ranges: Range[], offset: number, rows: number, dir: 1
 	return Math.max(0, ranges.findLastIndex((r) => r.end < offset));
 };
 
-export type Mode = "rallies" | "min";
+export type Mode = "rallies" | "min" | "handoff";
 
 export type Show = { text: boolean; summary: boolean; work: boolean };
 
@@ -50,12 +50,13 @@ export const toggleShow = (show: Show, kind: keyof Show): Show => {
 
 /** モードごとに遷移できる先を限定する。 */
 export const MODE_TRANSITIONS: Record<Mode, Mode[]> = {
-	rallies: ["min"],
+	rallies: ["min", "handoff"],
 	min: ["rallies"],
+	handoff: ["rallies"],
 };
 
 /** キー → 遷移先。要約はモードではなく、表示中の一覧への差し込み。 */
-export const MODE_KEYS: Record<string, Mode> = { m: "min", s: "rallies" };
+export const MODE_KEYS: Record<string, Mode> = { m: "min", n: "handoff", s: "rallies" };
 
 export const canMove = (from: Mode, to: Mode): boolean => MODE_TRANSITIONS[from].includes(to);
 

@@ -86,8 +86,12 @@ test("表示は本文・要約・作業を個別に切り替え、最後の 1 �
 
 test("モード遷移は表の範囲だけ", () => {
 	assert.equal(canMove("rallies", "min"), true);
+	assert.equal(canMove("rallies", "handoff"), true);
 	assert.equal(canMove("min", "rallies"), true);
+	assert.equal(canMove("handoff", "rallies"), true);
+	assert.equal(canMove("handoff", "min"), false);
 	assert.equal(modeForKey("m"), "min");
+	assert.equal(modeForKey("n"), "handoff");
 	assert.equal(modeForKey("s"), "rallies");
 	assert.equal(modeForKey("l"), undefined);
 	assert.equal(modeForKey("x"), undefined);

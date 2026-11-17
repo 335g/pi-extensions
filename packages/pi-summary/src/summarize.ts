@@ -16,7 +16,7 @@ export const groupRallies = (turns: Turn[]): Rally[] => {
 const serialize = (turns: Turn[]): string =>
 	turns.map((t, i) => `[${i + 1}] ${t.role === "user" ? "ユーザー" : "AI"}:\n${t.text}`).join("\n\n");
 
-const SYSTEM_PROMPT =
+export const SYSTEM_PROMPT =
 	"あなたは会話ログの要約器です。与えられたログだけを根拠にする。推測や評価を足さない。出力は日本語の Markdown のみ。";
 
 /** セッション全体の要約。 */

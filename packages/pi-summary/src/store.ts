@@ -18,6 +18,8 @@ export type Saved = {
 	handoff?: string;
 	/** 保留リスト（セッションに 1 つ）。 */
 	deferred?: DeferredItem[];
+	/** `handoff` に取り込み済みのラリー数。増分更新の基準。 */
+	handoffRallies?: number;
 	/** セッション全体の要約（`m`）。 */
 	min?: string;
 	/** `min` を生成した時点のラリー数。成長判定に使う。 */
@@ -30,6 +32,7 @@ export type Store = {
 	works: Map<string, string>;
 	handoff?: string;
 	deferred: DeferredItem[];
+	handoffRallies?: number;
 	min?: string;
 	minRallies?: number;
 };
@@ -49,6 +52,7 @@ export const readStore = (entries: readonly Entry[]): Store => {
 		}
 		if (saved.handoff) store.handoff = saved.handoff;
 		if (saved.deferred) store.deferred = saved.deferred;
+		if (typeof saved.handoffRallies === "number") store.handoffRallies = saved.handoffRallies;
 		if (saved.min) store.min = saved.min;
 		if (typeof saved.minRallies === "number") store.minRallies = saved.minRallies;
 	}

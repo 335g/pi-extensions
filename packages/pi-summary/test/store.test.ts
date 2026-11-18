@@ -48,6 +48,15 @@ test("全体要約（min）とそのラリー数を読み戻す", () => {
 	assert.equal(store.minRallies, 9);
 });
 
+test("引き継ぎ書の取り込み済みラリー数を読み戻す", () => {
+	const store = readStore([
+		{ type: "custom", customType: "pi-summary", data: { entryId: HANDOFF_ID, handoff: "## 状況\n- a", handoffRallies: 6 } },
+		{ type: "custom", customType: "pi-summary", data: { entryId: HANDOFF_ID, handoff: "## 状況\n- b", handoffRallies: 9 } },
+	]);
+	assert.equal(store.handoff, "## 状況\n- b");
+	assert.equal(store.handoffRallies, 9);
+});
+
 test("後の保存の handoff が勝ち、保留リストが無ければ空", () => {
 	const store = readStore([
 		{ type: "custom", customType: "pi-summary", data: { entryId: HANDOFF_ID, handoff: "古い" } },

@@ -1,4 +1,4 @@
-import { groupRallies, SYSTEM_PROMPT } from "./summarize.ts";
+import { groupRallies, SYSTEM_PROMPT, type Rally } from "./summarize.ts";
 import type { DeferredItem } from "./store.ts";
 import type { Turn } from "./turns.ts";
 
@@ -9,14 +9,27 @@ export type Coverage = Map<number, "adopted" | "deferred" | "dropped">;
 export type Handoff = { text: string; deferred: DeferredItem[]; coverage: Coverage; rallyCount: number };
 
 /** ラリーを番号付きで直列化する。出典に使う番号と揃える。 */
+const serializeOne = (rally: Rally, number: number): string => {
+	const lines = [`[ラリー${number}]`, "ユーザー:", rally.user.join("\n")];
+	if (rally.assistant.length) lines.push("AI:", rally.assistant.join("\n"));
+	return lines.join("\n");
+};
+
 export const serializeRallies = (turns: Turn[]): string =>
+	groupRallies(turns).map((rally, index) => serializeOne(rally, index + 1)).join("\n\n");
+
+/** 番号を start（1 始まり）から振って直列化する。増分更新の新ラリー用。 */
+export const serializeRalliesFrom = (turns: Turn[], start: number): string =>
 	groupRallies(turns)
-		.map((rally, index) => {
-			const lines = [`[ラリー${index + 1}]`, "ユーザー:", rally.user.join("\n")];
-			if (rally.assistant.length) lines.push("AI:", rally.assistant.join("\n"));
-			return lines.join("\n");
-		})
+		.slice(start - 1)
+		.map((rally, index) => serializeOne(rally, start + index))
 		.join("\n\n");
+
+/** 保留リストを既存フォーマット（「- ラリーN | 要約: ... | 理由: ...」）で直列化する。 */
+export const serializeDeferred = (items: DeferredItem[]): string =>
+	items.length
+		? items.map((item) => `- ラリー${item.sources.join(",")} | 要約: ${item.summary} | 理由: ${item.reason}`).join("\n")
+		: "- なし";
 
 /** 引き継ぎ書 + 保留リストを 1 回で生成するプロンプト。 */
 export const buildHandoffPrompt = (turns: Turn[]): { systemPrompt: string; user: string } => {
@@ -37,6 +50,48 @@ export const buildHandoffPrompt = (turns: Turn[]): { systemPrompt: string; user:
 		"- 全ラリーに目を通して漏れなく評価する。推測や評価を足さない。",
 	];
 	return { systemPrompt: SYSTEM_PROMPT, user: `${instruction.join("\n")}\n\n<log>\n${serializeRallies(turns)}\n</log>` };
+};
+
+/** 既存の引き継ぎ書 + 保留リストに新しいラリーだけを統合して完成形を返させる増分更新プロンプト。 */
+export const buildHandoffUpdatePrompt = (
+	current: { text: string; deferred: DeferredItem[] },
+	processedRallies: number,
+	turns: Turn[],
+): { systemPrompt: string; user: string } => {
+	const instruction = [
+		"既存の引き継ぎ書に新しい会話ラリーを統合し、完成形を出力してください。",
+		"",
+		"出力は次の形に厳密に従ってください。",
+		"",
+		"1. 統合後の引き継ぎ書（Markdown）。見出しは「状況」「決まったこと」「未解決」「次にやること」「注意」の 5 つだけ。",
+		"   各項目の末尾に「（出典: ラリーN）」の形で元のラリー番号を必ず付ける。該当がない節は書かない。",
+		"   新しいラリーで覆った古い記述は更新または削除し、同じ内容を重複させない。",
+		"2. その後、「## 保留」という見出しを置き、統合後の保留リストを列挙する。",
+		"   各行は「- ラリーN | 要約: ... | 理由: ...」の形。理由は省いた理由を書く。無ければ「- なし」とだけ書く。",
+		"",
+		"判断基準:",
+		"- 引き継ぎ書には、新しいセッションが作業を再開するために必要なことだけを入れる。",
+		"- 保留には、重要かもしれないが引き継ぎ書から省いたものを入れ、省いた理由を必ず明記する。",
+		"- 新しいラリーを漏れなく評価し、既存の記述と矛盾・重複するものは統合する。推測や評価を足さない。",
+	];
+	return {
+		systemPrompt: SYSTEM_PROMPT,
+		user: [
+			instruction.join("\n"),
+			"",
+			"<handoff>",
+			current.text,
+			"</handoff>",
+			"",
+			"<deferred>",
+			serializeDeferred(current.deferred),
+			"</deferred>",
+			"",
+			"<new>",
+			serializeRalliesFrom(turns, processedRallies + 1),
+			"</new>",
+		].join("\n"),
+	};
 };
 
 const SOURCE_RE = /（出典:\s*ラリー\s*([\d,、\s]+)）/g;

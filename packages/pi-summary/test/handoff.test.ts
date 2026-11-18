@@ -4,12 +4,15 @@ import {
 	buildAdoptPrompt,
 	buildHandoffPrompt,
 	buildHandoffText,
+	buildHandoffUpdatePrompt,
 	computeCoverage,
 	insertBullet,
 	parseAdopt,
 	parseHandoff,
 	parseSources,
+	serializeDeferred,
 	serializeRallies,
+	serializeRalliesFrom,
 	stripSources,
 } from "../src/handoff.ts";
 
@@ -92,4 +95,32 @@ test("coverage は未引用のラリーを dropped にする", () => {
 	assert.equal(c.get(1), "adopted");
 	assert.equal(c.get(2), "deferred");
 	assert.equal(c.get(3), "dropped");
+});
+
+test("増分更新は新ラリーだけを続き番号で直列化する", () => {
+	const s = serializeRalliesFrom(turns, 3);
+	assert.match(s, /\[ラリー3\]\nユーザー:\n質問3/);
+	assert.doesNotMatch(s, /\[ラリー1\]/);
+	assert.doesNotMatch(s, /質問1/);
+});
+
+test("保留リストをフォーマットに直列化する", () => {
+	assert.equal(serializeDeferred([{ summary: "s", reason: "r", sources: [3] }]), "- ラリー3 | 要約: s | 理由: r");
+	assert.equal(serializeDeferred([]), "- なし");
+});
+
+test("増分更新プロンプトは既存の引き継ぎ書・保留・新ラリーだけを渡す", () => {
+	const p = buildHandoffUpdatePrompt(
+		{ text: "## 状況\n- a（出典: ラリー1）", deferred: [{ summary: "s", reason: "r", sources: [2] }] },
+		2,
+		turns,
+	);
+	assert.match(p.user, /<handoff>/);
+	assert.match(p.user, /## 状況/);
+	assert.match(p.user, /<deferred>/);
+	assert.match(p.user, /ラリー2 \| 要約: s/);
+	assert.match(p.user, /<new>/);
+	assert.match(p.user, /\[ラリー3\]/);
+	assert.doesNotMatch(p.user, /質問1/);
+	assert.doesNotMatch(p.user, /質問2/);
 });

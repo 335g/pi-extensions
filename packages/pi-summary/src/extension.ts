@@ -782,6 +782,45 @@ export default function (pi: ExtensionAPI) {
 		else if (empty) ctx.ui.notify("直後のツール実行がありません", "info");
 	};
 
+	pi.registerCommand("summary-comments", {
+		description: "未要約の全コメントをバックグラウンドで要約する",
+		handler: async (_args, ctx) => {
+			const branch = ctx.sessionManager.getBranch();
+			const store = readStore(branch);
+			const targets = extractTurns(branch)
+				.filter((turn) => turn.id && !store.summaries.has(turn.id))
+				.map((turn) => ({ entryId: turn.id as string, text: turn.text }));
+			if (targets.length === 0) {
+				ctx.ui.notify("未要約のコメントはありません", "info");
+				return;
+			}
+			ctx.ui.notify(`${targets.length} 件のコメント要約を開始`, "info");
+			void summarizeComments(ctx, targets);
+		},
+	});
+
+	pi.registerCommand("summary-works", {
+		description: "未要約の全作業をバックグラウンドで要約する",
+		handler: async (_args, ctx) => {
+			const branch = ctx.sessionManager.getBranch();
+			const store = readStore(branch);
+			const turns = extractTurns(branch);
+			const targets: { entryId: string; startId: string; endId?: string }[] = [];
+			for (let i = 0; i < turns.length; i++) {
+				const turn = turns[i];
+				if (!turn.id || store.works.has(turn.id)) continue;
+				const endId = turns.slice(i + 1).find((next) => next.id)?.id;
+				targets.push({ entryId: turn.id, startId: turn.id, endId });
+			}
+			if (targets.length === 0) {
+				ctx.ui.notify("未要約の作業はありません", "info");
+				return;
+			}
+			ctx.ui.notify(`${targets.length} 件の作業要約を開始`, "info");
+			void summarizeWorks(ctx, targets);
+		},
+	});
+
 	pi.on("session_start", (_event, ctx) => {
 		let raw = "";
 		try {

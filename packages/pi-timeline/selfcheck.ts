@@ -161,7 +161,7 @@ await tool.execute(
 	"call-2",
 	{
 		tasks: [
-			{ id: "1", title: "plan", status: "done" },
+			{ id: "1", title: "plan", status: "done", result: "widget renders" },
 			{ id: "1.1", title: "child", parent: "1" },
 			{ id: "2", title: "build", status: "active", note: "wiring widget" },
 			{ id: "3", title: "test", status: "blocked" },
@@ -181,6 +181,7 @@ assert.match(text, /timeline/);
 assert.match(text, /1\/4/);
 assert.ok(first.some((l: string) => l.includes("child") && l.startsWith("  ")), "child task is indented");
 assert.match(text, /wiring widget/, "note is shown");
+assert.match(text, /→ widget renders/, "result is shown with the task");
 view.handleInput("down");
 width(view.render(80), 80);
 view.handleInput("q");

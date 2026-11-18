@@ -24,7 +24,7 @@ The model publishes the plan with one tool. Tasks are matched by id: an existing
 
 ```json
 { "tasks": [
-  { "id": "1", "title": "Plan the change", "status": "done" },
+  { "id": "1", "title": "Plan the change", "status": "done", "result": "Broke it into 3 tasks" },
   { "id": "2", "title": "Write the widget", "status": "active" },
   { "id": "2.1", "title": "Truncate the lines", "parent": "2" },
   { "id": "3", "title": "Run the tests", "status": "blocked", "note": "waiting on typecheck" }
@@ -32,6 +32,7 @@ The model publishes the plan with one tool. Tasks are matched by id: an existing
 ```
 
 - `status`: `pending` (default), `active`, `done`, `blocked`.
+- `result`: a one-line conclusion when a task is done (shown after the task in `/timeline` as `→ ...`).
 - Only the moment a task becomes `active` and the moment it becomes `done` are stored; the duration is the difference.
 - Empty ids, empty titles and duplicate ids are dropped. A parent that does not exist is treated as a root.
 - When new work arrives mid-plan, send only the new tasks; the existing ones stay.

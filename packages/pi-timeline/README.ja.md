@@ -26,7 +26,7 @@ pi install @335g/pi-timeline
 
 ```json
 { "tasks": [
-  { "id": "1", "title": "プランを立てる", "status": "done" },
+  { "id": "1", "title": "プランを立てる", "status": "done", "result": "3 タスクに分解した" },
   { "id": "2", "title": "widget を書く", "status": "active" },
   { "id": "2.1", "title": "描画を切り詰める", "parent": "2" },
   { "id": "3", "title": "テストを走らせる", "status": "blocked", "note": "typecheck 待ち" }
@@ -34,6 +34,7 @@ pi install @335g/pi-timeline
 ```
 
 - `status`: `pending`（既定）/ `active` / `done` / `blocked`
+- `result`: タスク完了時の結論（`/timeline` の一覧でタスクの後ろに `→ ...` と表示）
 - 状態が `active` になった時刻と `done` になった時刻だけを記録する。所要時間はその差分。
 - 空 id・空 title・重複 id は捨てる。存在しない親は根に戻す。
 - 途中で別の仕事が降ってきたら、新しいタスクだけを送れば追加される（既存はそのまま）。

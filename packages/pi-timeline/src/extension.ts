@@ -35,6 +35,7 @@ const schema = Type.Object({
 			status: Type.Optional(statusSchema),
 			parent: Type.Optional(Type.String({ description: "id of the parent task" })),
 			note: Type.Optional(Type.String({ description: "Short reason, shown for blocked tasks" })),
+			result: Type.Optional(Type.String({ description: "Concise conclusion of the finished task, shown with it in /timeline" })),
 		}),
 		{ description: "The complete task list. Each call replaces the previous list." },
 	),
@@ -98,7 +99,8 @@ function viewLines(
 		const styled = right
 			? `${left}${" ".repeat(Math.max(1, titleWidth - (indent.length + row.title.length + 2)))}${right}`
 			: left;
-		return truncateToWidth(row.note ? `${styled}  ${theme.fg("dim", row.note)}` : styled, width);
+		const suffix = [row.note, row.result ? `→ ${row.result}` : ""].filter((s) => s !== "").join("  ");
+		return truncateToWidth(suffix ? `${styled}  ${theme.fg("dim", suffix)}` : styled, width);
 	});
 
 	const hint =
@@ -262,6 +264,7 @@ export default function (pi: ExtensionAPI) {
 			"Keep exactly one task active: when you start a new task, mark the previous active task done (or blocked) in the same call.",
 			"Each task is one bounded action with a concrete target (e.g. \"add parseArgs to src/cli.ts\"), not an umbrella phase.",
 			"When you don't yet know the concrete steps, start with one investigation task, then add file-level steps on the next call.",
+			"When a task finishes, set its status to done and put a one-line conclusion in its `result` field so /timeline shows the outcome.",
 			"Use parent tasks only to group concrete children, never as stand-alone placeholders.",
 		],
 		parameters: schema,

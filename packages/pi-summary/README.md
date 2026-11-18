@@ -94,6 +94,7 @@ pi -e ./src/extension.ts       # 単発で試す
 | `src/turns.ts` | セッションエントリ → user/assistant の発話だけ |
 | `src/summarize.ts` | ラリー分割と要約プロンプト（全体・1 コメント） |
 | `src/store.ts` | 保存済み要約の読み戻し（session の custom entry） |
+| `src/auto.ts` | 自動要約の設定パースと発火判定 |
 | `src/help.ts` | `?` のキー一覧と枠の描画 |
 
 

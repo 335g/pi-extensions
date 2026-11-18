@@ -252,12 +252,16 @@ export default function (pi: ExtensionAPI) {
 		label: "Timeline",
 		description:
 			"Publish the task plan for this work. Every call replaces the whole list: send the full plan each time, " +
-			"changing statuses as you go (pending, active, done, blocked). Use it for work that takes several steps, " +
-			"and mark exactly one task active at a time so the user sees what is running.",
-		promptSnippet: "Publish the plan and per-step progress to the user's timeline panel",
+			"changing statuses as you go (pending, active, done, blocked). Use it for multi-step work, and mark exactly " +
+			"one task active at a time so the user sees what is running. Write tasks at the granularity of one concrete " +
+			"change: each task names the file, function, or test it touches — never a phase like \"investigate\", \"implement\", or \"test\".",
+		promptSnippet: "Publish a file-level plan and per-step progress to the user's timeline panel",
 		promptGuidelines: [
 			"Use timeline for multi-step work instead of prose checklists; the user sees it live above the prompt.",
 			"Send the full task list on every timeline call, reusing the same ids; keep exactly one task active.",
+			"Each task is one bounded action with a concrete target (e.g. \"add parseArgs to src/cli.ts\"), not an umbrella phase.",
+			"When you don't yet know the concrete steps, start with one investigation task, then replace the list with file-level steps on the next call.",
+			"Use parent tasks only to group concrete children, never as stand-alone placeholders.",
 		],
 		parameters: schema,
 		async execute(_toolCallId, params: Params, _signal, _onUpdate, ctx) {

@@ -30,7 +30,7 @@ export const helpLines = (theme: Theme, width: number): string[] => {
 	const body = [
 		theme.bold(" pi-summary キー一覧"),
 		"",
-		...KEY_HELP.map(([key, desc]) => ` ${theme.fg("accent", key.padEnd(15))}${desc}`),
+		...KEY_HELP.map(([key, desc]) => ` ${theme.fg("accent", key.padEnd(15))} ${desc}`),
 		"",
 		theme.fg("dim", " 何かキーを押すと戻る"),
 	].map((line) => content(truncateToWidth(line, inner)));

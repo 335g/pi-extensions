@@ -18,7 +18,7 @@ import {
 	type Show,
 } from "./panel.ts";
 import { helpLines, helpWidth } from "./help.ts";
-import { buildAdoptPrompt, buildHandoffPrompt, buildHandoffText, computeCoverage, insertBullet, parseAdopt, parseHandoff, stripSources, type Handoff } from "./handoff.ts";
+import { buildAdoptPrompt, buildHandoffPrompt, buildHandoffText, buildHandoffUpdatePrompt, computeCoverage, insertBullet, parseAdopt, parseHandoff, stripSources, type Handoff } from "./handoff.ts";
 import { buildCommentPrompt, buildMinPrompt, groupRallies } from "./summarize.ts";
 import { DEFAULT_AUTO, parseAutoConfig, shouldRefreshMin, type AutoConfig } from "./auto.ts";
 import { HANDOFF_ID, MIN_ID, STORE, type DeferredItem, type Saved, type Store, readStore } from "./store.ts";
@@ -623,6 +623,7 @@ const buildSources = (
 		store.works = fresh.works;
 		store.handoff = fresh.handoff;
 		store.deferred = fresh.deferred;
+		store.handoffRallies = fresh.handoffRallies;
 		store.min = fresh.min;
 		store.minRallies = fresh.minRallies;
 	};
@@ -655,7 +656,8 @@ const buildSources = (
 			const handoff = parseHandoff(raw, rallyCount);
 			store.handoff = handoff.text;
 			store.deferred = handoff.deferred;
-			save({ entryId: HANDOFF_ID, handoff: handoff.text, deferred: handoff.deferred });
+			store.handoffRallies = rallyCount;
+			save({ entryId: HANDOFF_ID, handoff: handoff.text, deferred: handoff.deferred, handoffRallies: rallyCount });
 			return handoffView(handoff);
 		},
 		adopt: async (item: DeferredItem) => parseAdopt(await runPrompt(buildAdoptPrompt(item, turns), ctx), item.summary),
@@ -702,6 +704,7 @@ export default function (pi: ExtensionAPI) {
 	const pendingSummaries = new Set<string>();
 	const pendingWorks = new Set<string>();
 	let minRunning = false;
+	let handoffRunning = false;
 
 	const notifyStore = (): void => {
 		for (const callback of [...storeListeners]) callback();
@@ -730,6 +733,30 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(`全体要約に失敗: ${error instanceof Error ? error.message : String(error)}`, "error");
 		} finally {
 			minRunning = false;
+		}
+	};
+
+	const refreshHandoff = async (ctx: ExtensionContext): Promise<void> => {
+		if (handoffRunning) return;
+		handoffRunning = true;
+		try {
+			const branch = ctx.sessionManager.getBranch();
+			const turns = extractTurns(branch);
+			const rallyCount = groupRallies(turns).length;
+			if (rallyCount === 0) return;
+			const store = readStore(branch);
+			const processed = store.handoffRallies ?? 0;
+			const raw = processed > 0 && store.handoff
+				? await runPrompt(buildHandoffUpdatePrompt({ text: store.handoff, deferred: store.deferred }, processed, turns), ctx)
+				: await runPrompt(buildHandoffPrompt(turns), ctx);
+			const handoff = parseHandoff(raw, rallyCount);
+			pi.appendEntry(STORE, { entryId: HANDOFF_ID, handoff: handoff.text, deferred: handoff.deferred, handoffRallies: rallyCount });
+			notifyStore();
+			ctx.ui.notify("引き継ぎ書を更新しました", "info");
+		} catch (error) {
+			ctx.ui.notify(`引き継ぎ書の更新に失敗: ${error instanceof Error ? error.message : String(error)}`, "error");
+		} finally {
+			handoffRunning = false;
 		}
 	};
 
@@ -821,6 +848,18 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("summary-overall", {
+		description: "セッション全体をバックグラウンドで要約する（/summary の m 相当）",
+		handler: async (_args, ctx) => {
+			if (extractTurns(ctx.sessionManager.getBranch()).length === 0) {
+				ctx.ui.notify("会話ラリーがありません", "warning");
+				return;
+			}
+			ctx.ui.notify("全体要約を開始", "info");
+			void refreshMin(ctx);
+		},
+	});
+
 	pi.on("session_start", (_event, ctx) => {
 		let raw = "";
 		try {
@@ -834,7 +873,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_settled", (_event, ctx) => {
 		const branch = ctx.sessionManager.getBranch();
 		const rallyCount = groupRallies(extractTurns(branch)).length;
-		if (shouldRefreshMin(readStore(branch), rallyCount, auto)) void refreshMin(ctx);
+		const store = readStore(branch);
+		if (shouldRefreshMin(store, rallyCount, auto)) void refreshMin(ctx);
+		if (shouldRefreshHandoff(store, rallyCount, auto)) void refreshHandoff(ctx);
 	});
 
 	pi.registerCommand("summary", {

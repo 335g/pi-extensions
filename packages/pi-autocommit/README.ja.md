@@ -36,6 +36,15 @@ pi install @335g/pi-autocommit
 }
 ```
 
+## スラッシュコマンド
+
+| コマンド | 動作 |
+|---|---|
+| `/autocommit-enable [true\|false]` | 自動コミットのオン／オフ。引数なしで現在の状態を表示。 |
+| `/autocommit-mode [auto\|picker\|review]` | `agent_end` の整理モードを設定。引数なしで次のモードへ進む。 |
+| `/autocommit-model [provider/modelId \| clear]` | コミットメッセージ用のモデルを設定。引数なしでセレクタ、`clear` でセッションモデルに戻す。 |
+| `/autocommit-organise [sessionId]` | チェックポイントコミットを整理。引数なしでコミットピッカー、セッション ID 指定でそのセッション分だけを整理。 |
+
 ## 仕組み
 
 自動コミットは**デフォルトでは無効**です。`.pi/pi-autocommit.json` で `"enable": true` を設定するか `/autocommit-enable true` を実行すると有効化されます。

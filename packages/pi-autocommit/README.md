@@ -35,6 +35,15 @@ Or add it to your pi package config:
 }
 ```
 
+## Slash commands
+
+| Command | Action |
+|---|---|
+| `/autocommit-enable [true\|false]` | Toggle auto-commit. No argument shows the current state. |
+| `/autocommit-mode [auto\|picker\|review]` | Set the `agent_end` organise mode. No argument cycles to the next mode. |
+| `/autocommit-model [provider/modelId \| clear]` | Set the LLM model for commit messages. No argument opens a selector popup; `clear` falls back to the session model. |
+| `/autocommit-organise [sessionId]` | Reorganise checkpoint commits. No argument shows the commit picker; a session id reorganises only that session's checkpoints. |
+
 ## How it works
 
 Auto-commit is **disabled by default**. Enable it by setting `"enable": true` in `.pi/pi-autocommit.json` or running `/autocommit-enable true`; the extension then:

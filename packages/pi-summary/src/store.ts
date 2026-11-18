@@ -4,6 +4,9 @@ export const STORE = "pi-summary";
 /** 引き継ぎ書・保留リストを保存するときの固定 entryId。 */
 export const HANDOFF_ID = "__handoff__";
 
+/** セッション全体の要約（`m`）を保存するときの固定 entryId。 */
+export const MIN_ID = "__min__";
+
 /** 保留リストの 1 項目。sources は 1 始まりのラリー番号。 */
 export type DeferredItem = { summary: string; reason: string; sources: number[] };
 
@@ -15,6 +18,10 @@ export type Saved = {
 	handoff?: string;
 	/** 保留リスト（セッションに 1 つ）。 */
 	deferred?: DeferredItem[];
+	/** セッション全体の要約（`m`）。 */
+	min?: string;
+	/** `min` を生成した時点のラリー数。成長判定に使う。 */
+	minRallies?: number;
 };
 
 /** entryId → 要約テキスト。会話はセッションを跨いでも id が変わらない。 */
@@ -23,6 +30,8 @@ export type Store = {
 	works: Map<string, string>;
 	handoff?: string;
 	deferred: DeferredItem[];
+	min?: string;
+	minRallies?: number;
 };
 
 type Entry = { type: string; customType?: string; data?: unknown };
@@ -40,6 +49,8 @@ export const readStore = (entries: readonly Entry[]): Store => {
 		}
 		if (saved.handoff) store.handoff = saved.handoff;
 		if (saved.deferred) store.deferred = saved.deferred;
+		if (saved.min) store.min = saved.min;
+		if (typeof saved.minRallies === "number") store.minRallies = saved.minRallies;
 	}
 	return store;
 };

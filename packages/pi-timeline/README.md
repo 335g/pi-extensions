@@ -12,6 +12,14 @@ timeline  3/7  ████░░░░░░  ▶ write widget 1m20s  !1
 pi install @335g/pi-timeline
 ```
 
+## Commands
+
+| Command | Action |
+|---|---|
+| `/timeline` | Open the full task view (same as `alt+t`) |
+| `/timeline-reset` | Clear the plan and the footer line |
+| `alt+t` | Open the full task view (shortcut) |
+
 ## What you see
 
 - One line: progress bar, done/total, the running task with elapsed time, how many tasks are blocked.

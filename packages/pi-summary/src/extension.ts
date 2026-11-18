@@ -20,7 +20,7 @@ import {
 import { helpLines, helpWidth } from "./help.ts";
 import { buildAdoptPrompt, buildHandoffPrompt, buildHandoffText, buildHandoffUpdatePrompt, computeCoverage, insertBullet, parseAdopt, parseHandoff, stripSources, type Handoff } from "./handoff.ts";
 import { buildCommentPrompt, buildMinPrompt, groupRallies } from "./summarize.ts";
-import { DEFAULT_AUTO, parseAutoConfig, shouldRefreshMin, type AutoConfig } from "./auto.ts";
+import { DEFAULT_AUTO, parseAutoConfig, shouldRefreshHandoff, shouldRefreshMin, type AutoConfig } from "./auto.ts";
 import { HANDOFF_ID, MIN_ID, STORE, type DeferredItem, type Saved, type Store, readStore } from "./store.ts";
 import { extractTurns, type Turn } from "./turns.ts";
 import { buildWorkPrompt, extractWorkBetween } from "./work.ts";

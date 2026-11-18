@@ -50,7 +50,8 @@ export function merge(prev: readonly Task[], input: readonly TaskInput[], now: n
 		const task: Task = { id, title, status };
 		if (raw.parent && raw.parent !== id) task.parent = raw.parent;
 		if (raw.note) task.note = raw.note;
-		const startedAt = old?.startedAt ?? (status === "active" || status === "done" ? now : undefined);
+		// active / done だけが時間を持つ。blocked や pending に戻したら計測を止める。
+		const startedAt = status === "active" || status === "done" ? (old?.startedAt ?? now) : undefined;
 		if (startedAt !== undefined) task.startedAt = startedAt;
 		if (status === "done") task.endedAt = old?.endedAt ?? now;
 		tasks.push(task);

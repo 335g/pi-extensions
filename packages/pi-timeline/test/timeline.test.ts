@@ -34,6 +34,14 @@ test("merge stamps times only when a task starts or finishes", () => {
 	assert.equal(elapsed(third[0], 9000), 4000);
 });
 
+test("merge stops the clock when a running task is blocked", () => {
+	const running = merge([], [{ id: "1", title: "plan", status: "active" }], 1000);
+	const blocked = merge(running, [{ id: "1", title: "plan", status: "blocked" }], 5000);
+	assert.equal(blocked[0].startedAt, undefined);
+	assert.equal(elapsed(blocked[0], 9000), undefined);
+	assert.equal(totalActive(blocked, 9000), 0);
+});
+
 test("merge drops a parent that is missing and keeps a cycle visible", () => {
 	const orphan = merge([], [{ id: "a", title: "child", parent: "gone" }], 0);
 	assert.equal(orphan[0].parent, undefined);

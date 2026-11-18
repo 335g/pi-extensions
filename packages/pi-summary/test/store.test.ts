@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { HANDOFF_ID, readStore, type DeferredItem } from "../src/store.ts";
+import { HANDOFF_ID, MIN_ID, readStore, type DeferredItem } from "../src/store.ts";
 
 test("保存済みの要約と作業を entryId で引ける", () => {
 	const store = readStore([
@@ -37,6 +37,15 @@ test("引き継ぎ書と保留リストをセッションから読む", () => {
 	assert.equal(store.handoff, "## 状況\n- a");
 	assert.deepEqual(store.deferred, deferred);
 	assert.equal(store.summaries.get("a"), "要約A");
+});
+
+test("全体要約（min）とそのラリー数を読み戻す", () => {
+	const store = readStore([
+		{ type: "custom", customType: "pi-summary", data: { entryId: MIN_ID, min: "全体要約A", minRallies: 6 } },
+		{ type: "custom", customType: "pi-summary", data: { entryId: MIN_ID, min: "全体要約B", minRallies: 9 } },
+	]);
+	assert.equal(store.min, "全体要約B");
+	assert.equal(store.minRallies, 9);
 });
 
 test("後の保存の handoff が勝ち、保留リストが無ければ空", () => {

@@ -1,4 +1,6 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, copyToClipboard } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
@@ -18,7 +20,8 @@ import {
 import { helpLines, helpWidth } from "./help.ts";
 import { buildAdoptPrompt, buildHandoffPrompt, buildHandoffText, computeCoverage, insertBullet, parseAdopt, parseHandoff, stripSources, type Handoff } from "./handoff.ts";
 import { buildCommentPrompt, buildMinPrompt, groupRallies } from "./summarize.ts";
-import { HANDOFF_ID, STORE, type DeferredItem, type Saved, type Store, readStore } from "./store.ts";
+import { DEFAULT_AUTO, parseAutoConfig, shouldRefreshMin, type AutoConfig } from "./auto.ts";
+import { HANDOFF_ID, MIN_ID, STORE, type DeferredItem, type Saved, type Store, readStore } from "./store.ts";
 import { extractTurns, type Turn } from "./turns.ts";
 import { buildWorkPrompt, extractWorkBetween } from "./work.ts";
 import { type Card, type Content, cardsContent } from "./view.ts";
@@ -44,6 +47,10 @@ type Sources = {
 	/** このセッションに保存済みの要約。再開時もここから引く。 */
 	store: Store;
 	save(data: Saved): void;
+	/** 保存済み要約をブランチから読み直す（背景要約の完了後）。 */
+	reloadStore(): void;
+	/** 全体要約（min）の完了通知。戻り値は解除関数。 */
+	onMinUpdate(callback: () => void): () => void;
 };
 
 type ShowKind = keyof Show;
@@ -84,6 +91,7 @@ class SummaryPanel {
 	private offset = 0;
 	private renderedWidth = -1;
 	private renderedSelected = -2;
+	private unsubMin: (() => void) | undefined;
 
 	constructor(sources: Sources, theme: Theme, tui: Tui, done: (value?: Outcome) => void, overlay: boolean) {
 		this.sources = sources;
@@ -93,6 +101,13 @@ class SummaryPanel {
 		this.overlay = overlay;
 		this.border = new DynamicBorder((s: string) => theme.fg("accent", s));
 		this.mode = "rallies";
+		this.unsubMin = sources.onMinUpdate(() => {
+			this.sources.reloadStore();
+			if (this.mode === "min") {
+				this.cache.delete("min");
+				void this.load("min");
+			}
+		});
 		void this.load(this.mode);
 	}
 
@@ -244,6 +259,11 @@ class SummaryPanel {
 	invalidate(): void {
 		this.renderedWidth = -1;
 		this.renderedSelected = -2;
+	}
+
+	dispose(): void {
+		this.unsubMin?.();
+		this.unsubMin = undefined;
 	}
 
 	/** 選択中のコメント。要約カードの上では undefined。 */
@@ -592,7 +612,7 @@ const handoffView = (handoff: Handoff): View => ({
 	],
 });
 
-const runPrompt = async (prompt: { systemPrompt: string; user: string }, ctx: ExtensionCommandContext): Promise<string> => {
+const runPrompt = async (prompt: { systemPrompt: string; user: string }, ctx: ExtensionContext): Promise<string> => {
 	const model = ctx.model;
 	if (!model) throw new Error("モデルが選択されていません");
 	ctx.ui.setStatus("pi-summary", "要約中…");
@@ -617,20 +637,39 @@ const runPrompt = async (prompt: { systemPrompt: string; user: string }, ctx: Ex
 	}
 };
 
-const buildSources = (ctx: ExtensionCommandContext, save: (data: Saved) => void): Sources => {
+const buildSources = (
+	ctx: ExtensionCommandContext,
+	save: (data: Saved) => void,
+	background: { refreshMin: (ctx: ExtensionContext) => Promise<void>; onMinUpdate: (callback: () => void) => () => void },
+): Sources => {
 	const branch = ctx.sessionManager.getBranch();
 	const turns = extractTurns(branch);
 	const rallyCount = groupRallies(turns).length;
 	const store = readStore(branch);
+	const reloadStore = (): void => {
+		const fresh = readStore(branch);
+		store.summaries = fresh.summaries;
+		store.works = fresh.works;
+		store.handoff = fresh.handoff;
+		store.deferred = fresh.deferred;
+		store.min = fresh.min;
+		store.minRallies = fresh.minRallies;
+	};
 	return {
 		store,
 		save,
+		reloadStore,
+		onMinUpdate: background.onMinUpdate,
 		async view(mode: Mode): Promise<View> {
 			if (mode === "rallies") {
 				const coverage = store.handoff ? computeCoverage(rallyCount, store.handoff, store.deferred) : undefined;
 				return { title: `会話ラリー ${rallyCount} 件`, cards: turnCards(turns, coverage) };
 			}
-			if (mode === "min") return { title: "全体サマリー", cards: neutralCards("要約", await runPrompt(buildMinPrompt(turns), ctx)) };
+			if (mode === "min") {
+				if (store.min) return { title: "全体サマリー", cards: neutralCards("要約", store.min) };
+				void background.refreshMin(ctx);
+				return { title: "全体サマリー", cards: neutralCards("要約", "要約中…（完了すると自動更新されます）") };
+			}
 			if (store.handoff) {
 				return handoffView({
 					text: store.handoff,
@@ -691,6 +730,52 @@ const branchTo = async (entryId: string | undefined, ctx: ExtensionCommandContex
 };
 
 export default function (pi: ExtensionAPI) {
+	let auto: AutoConfig = { ...DEFAULT_AUTO };
+	const minListeners = new Set<() => void>();
+	let minRunning = false;
+
+	const refreshMin = async (ctx: ExtensionContext): Promise<void> => {
+		if (minRunning) return;
+		minRunning = true;
+		try {
+			const branch = ctx.sessionManager.getBranch();
+			const turns = extractTurns(branch);
+			const rallyCount = groupRallies(turns).length;
+			if (rallyCount === 0) return;
+			const text = await runPrompt(buildMinPrompt(turns), ctx);
+			pi.appendEntry(STORE, { entryId: MIN_ID, min: text, minRallies: rallyCount });
+			for (const callback of [...minListeners]) callback();
+			ctx.ui.notify("全体要約を更新しました", "info");
+		} catch (error) {
+			ctx.ui.notify(`全体要約に失敗: ${error instanceof Error ? error.message : String(error)}`, "error");
+		} finally {
+			minRunning = false;
+		}
+	};
+
+	const onMinUpdate = (callback: () => void): (() => void) => {
+		minListeners.add(callback);
+		return () => {
+			minListeners.delete(callback);
+		};
+	};
+
+	pi.on("session_start", (_event, ctx) => {
+		let raw = "";
+		try {
+			raw = readFileSync(join(ctx.cwd, ".pi", "pi-summary.json"), "utf8");
+		} catch {
+			// 設定ファイルが無ければ既定（無効）
+		}
+		auto = parseAutoConfig(raw);
+	});
+
+	pi.on("agent_settled", (_event, ctx) => {
+		const branch = ctx.sessionManager.getBranch();
+		const rallyCount = groupRallies(extractTurns(branch)).length;
+		if (shouldRefreshMin(readStore(branch), rallyCount, auto)) void refreshMin(ctx);
+	});
+
 	pi.registerCommand("summary", {
 		description: "会話の表示。l で選択コメント、i で直後の作業を要約（L / I で未要約をまとめて）",
 		handler: async (_args, ctx) => {
@@ -698,7 +783,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("会話ラリーがありません", "warning");
 				return;
 			}
-			const sources = buildSources(ctx, (data) => pi.appendEntry(STORE, data));
+			const sources = buildSources(ctx, (data) => pi.appendEntry(STORE, data), { refreshMin, onMinUpdate });
 			if (ctx.mode !== "tui") {
 				process.stdout.write(`${cardsText((await sources.view("rallies")).cards)}\n`);
 				return;

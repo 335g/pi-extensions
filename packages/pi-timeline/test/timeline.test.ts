@@ -56,6 +56,36 @@ test("merge drops a parent that is missing and keeps a cycle visible", () => {
 	);
 });
 
+test("merge appends new ids and keeps tasks not mentioned", () => {
+	const first = merge([], [
+		{ id: "1", title: "a", status: "done" },
+		{ id: "2", title: "b", status: "active" },
+	], 0);
+	const second = merge(first, [{ id: "3", title: "c" }], 5000);
+	assert.deepEqual(
+		second.map((t) => t.id),
+		["1", "2", "3"],
+	);
+	assert.equal(second[0].status, "done");
+	assert.equal(second[1].status, "active");
+	assert.equal(second[2].status, "pending");
+
+	const third = merge(second, [{ id: "2", title: "b", status: "done" }], 9000);
+	assert.deepEqual(
+		third.map((t) => t.id),
+		["1", "2", "3"],
+	);
+	assert.equal(third[1].status, "done");
+	assert.equal(third[1].startedAt, 0, "update keeps the original start");
+	assert.equal(third[1].endedAt, 9000);
+});
+
+test("merge keeps a new task's parent that was not re-sent", () => {
+	const first = merge([], [{ id: "1", title: "root" }], 0);
+	const second = merge(first, [{ id: "2", title: "child", parent: "1" }], 0);
+	assert.equal(second[1].parent, "1");
+});
+
 test("lines puts children under their parent, depth first", () => {
 	const tasks = merge([], [
 		{ id: "1", title: "root" },

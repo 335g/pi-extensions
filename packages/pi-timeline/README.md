@@ -20,7 +20,7 @@ pi install @335g/pi-timeline
 
 ## The `timeline` tool
 
-The model publishes the plan with one tool, **replacing the whole list** on every call. Reusing an id keeps its timings.
+The model publishes the plan with one tool. Tasks are matched by id: an existing id updates that task, a new id appends it, and tasks not mentioned stay. Reusing an id keeps its timings.
 
 ```json
 { "tasks": [
@@ -34,6 +34,7 @@ The model publishes the plan with one tool, **replacing the whole list** on ever
 - `status`: `pending` (default), `active`, `done`, `blocked`.
 - Only the moment a task becomes `active` and the moment it becomes `done` are stored; the duration is the difference.
 - Empty ids, empty titles and duplicate ids are dropped. A parent that does not exist is treated as a root.
+- When new work arrives mid-plan, send only the new tasks; the existing ones stay.
 
 ## State and persistence
 

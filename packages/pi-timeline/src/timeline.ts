@@ -32,21 +32,24 @@ const GLYPHS: Record<Status, string> = { done: "✓", active: "▶", pending: "�
 export const glyph = (status: Status): string => GLYPHS[status];
 
 /**
- * 入力から新しいタスク一覧を作る。
- * 時刻は同じ id の前回値から引き継ぎ、active / done になった瞬間だけ刻む。
- * 空 id・空 title・重複 id は捨て、存在しない親は根に戻す。
+ * 入力を差分として扱う。同じ id は位置を保って更新し、新しい id は末尾に追加し、
+ * 入力に現れない既存タスクは残す。時刻は同じ id の前回値から引き継ぎ、
+ * active / done になった瞬間だけ刻む。空 id・空 title・重複 id は捨て、
+ * 存在しない親は根に戻す。
  */
 export function merge(prev: readonly Task[], input: readonly TaskInput[], now: number): Task[] {
-	const before = new Map(prev.map((t) => [t.id, t]));
+	const byId = new Map<string, Task>();
+	for (const t of prev) byId.set(t.id, t);
+	const order: string[] = prev.map((t) => t.id);
+	const tasks = new Map<string, Task>(byId);
 	const seen = new Set<string>();
-	const tasks: Task[] = [];
 	for (const raw of input) {
 		const id = String(raw?.id ?? "").trim();
 		const title = String(raw?.title ?? "").trim();
 		if (!id || !title || seen.has(id)) continue;
 		seen.add(id);
 		const status = raw.status && STATUSES.includes(raw.status) ? raw.status : "pending";
-		const old = before.get(id);
+		const old = byId.get(id);
 		const task: Task = { id, title, status };
 		if (raw.parent && raw.parent !== id) task.parent = raw.parent;
 		if (raw.note) task.note = raw.note;
@@ -54,9 +57,13 @@ export function merge(prev: readonly Task[], input: readonly TaskInput[], now: n
 		const startedAt = status === "active" || status === "done" ? (old?.startedAt ?? now) : undefined;
 		if (startedAt !== undefined) task.startedAt = startedAt;
 		if (status === "done") task.endedAt = old?.endedAt ?? now;
-		tasks.push(task);
+		if (!byId.has(id)) order.push(id);
+		tasks.set(id, task);
 	}
-	return tasks.map((t) => (t.parent && !seen.has(t.parent) ? { ...t, parent: undefined } : t));
+	return order.map((id) => {
+		const t = tasks.get(id)!;
+		return t.parent && !tasks.has(t.parent) ? { ...t, parent: undefined } : t;
+	});
 }
 
 export function progress(tasks: readonly Task[]): { done: number; total: number } {

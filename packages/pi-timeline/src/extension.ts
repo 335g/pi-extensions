@@ -251,16 +251,17 @@ export default function (pi: ExtensionAPI) {
 		name: "timeline",
 		label: "Timeline",
 		description:
-			"Publish the task plan for this work. Every call replaces the whole list: send the full plan each time, " +
-			"changing statuses as you go (pending, active, done, blocked). Use it for multi-step work, and mark exactly " +
-			"one task active at a time so the user sees what is running. Write tasks at the granularity of one concrete " +
-			"change: each task names the file, function, or test it touches — never a phase like \"investigate\", \"implement\", or \"test\".",
+			"Publish the task plan for this work. Tasks are matched by id: a new id appends a task, an existing id " +
+			"updates that task in place, and tasks you don't mention stay. Mark exactly one task active at a time so " +
+			"the user sees what is running. Write tasks at the granularity of one concrete change: each task names the " +
+			"file, function, or test it touches — never a phase like \"investigate\", \"implement\", or \"test\".",
 		promptSnippet: "Publish a file-level plan and per-step progress to the user's timeline panel",
 		promptGuidelines: [
 			"Use timeline for multi-step work instead of prose checklists; the user sees it live above the prompt.",
-			"Send the full task list on every timeline call, reusing the same ids; keep exactly one task active.",
+			"Send only the tasks you are adding or changing; reuse an existing id to update it, use a fresh id for a new task.",
+			"Keep exactly one task active: when you start a new task, mark the previous active task done (or blocked) in the same call.",
 			"Each task is one bounded action with a concrete target (e.g. \"add parseArgs to src/cli.ts\"), not an umbrella phase.",
-			"When you don't yet know the concrete steps, start with one investigation task, then replace the list with file-level steps on the next call.",
+			"When you don't yet know the concrete steps, start with one investigation task, then add file-level steps on the next call.",
 			"Use parent tasks only to group concrete children, never as stand-alone placeholders.",
 		],
 		parameters: schema,
@@ -270,7 +271,8 @@ export default function (pi: ExtensionAPI) {
 			const { done, total } = progress(tasks);
 			const running = tasks.find((t) => t.status === "active");
 			const summary = `${done}/${total} done${running ? `, active: ${running.title}` : ""}`;
-			return { content: [{ type: "text" as const, text: summary }], details: { tasks } };
+			const list = tasks.map((t) => `${t.id} [${t.status}] ${t.title}${t.note ? ` (${t.note})` : ""}`).join("\n");
+			return { content: [{ type: "text" as const, text: `${summary}\n${list}` }], details: { tasks } };
 		},
 	});
 

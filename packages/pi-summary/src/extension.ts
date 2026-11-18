@@ -37,9 +37,6 @@ type View = { title: string; cards: Card[]; handoff?: Handoff };
 type Outcome = string | { kind: "toggle" } | undefined;
 type Sources = {
 	view(mode: Mode): Promise<View>;
-	comment(text: string): Promise<string>;
-	/** 直後の作業の要約。ツール呼び出しが無ければ null。 */
-	work(startId: string, endId?: string): Promise<string | null>;
 	/** 保留項目を引き継ぎ書向けに再要約する。 */
 	adopt(item: DeferredItem): Promise<{ section: string; bullet: string }>;
 	/** 引き継ぎ書の全文をエディタで編集する。中止時は undefined。 */
@@ -49,8 +46,12 @@ type Sources = {
 	save(data: Saved): void;
 	/** 保存済み要約をブランチから読み直す（背景要約の完了後）。 */
 	reloadStore(): void;
-	/** 全体要約（min）の完了通知。戻り値は解除関数。 */
-	onMinUpdate(callback: () => void): () => void;
+	/** 保存が起きるたびの通知。戻り値は解除関数。 */
+	onStoreUpdate(callback: () => void): () => void;
+	/** コメント要約をバックグラウンドで開始する。 */
+	summarizeComments(targets: { entryId: string; text: string }[]): void;
+	/** 作業要約をバックグラウンドで開始する。 */
+	summarizeWorks(targets: { entryId: string; startId: string; endId?: string }[]): void;
 };
 
 type ShowKind = keyof Show;
@@ -91,7 +92,7 @@ class SummaryPanel {
 	private offset = 0;
 	private renderedWidth = -1;
 	private renderedSelected = -2;
-	private unsubMin: (() => void) | undefined;
+	private unsubStore: (() => void) | undefined;
 
 	constructor(sources: Sources, theme: Theme, tui: Tui, done: (value?: Outcome) => void, overlay: boolean) {
 		this.sources = sources;
@@ -101,11 +102,17 @@ class SummaryPanel {
 		this.overlay = overlay;
 		this.border = new DynamicBorder((s: string) => theme.fg("accent", s));
 		this.mode = "rallies";
-		this.unsubMin = sources.onMinUpdate(() => {
+		this.unsubStore = sources.onStoreUpdate(() => {
 			this.sources.reloadStore();
+			if (this.closed) return;
 			if (this.mode === "min") {
 				this.cache.delete("min");
 				void this.load("min");
+				return;
+			}
+			if (this.phase === "ready") {
+				this.rebuild();
+				this.tui.requestRender();
 			}
 		});
 		void this.load(this.mode);
@@ -262,8 +269,9 @@ class SummaryPanel {
 	}
 
 	dispose(): void {
-		this.unsubMin?.();
-		this.unsubMin = undefined;
+		this.closed = true;
+		this.unsubStore?.();
+		this.unsubStore = undefined;
 	}
 
 	/** 選択中のコメント。要約カードの上では undefined。 */
@@ -364,8 +372,8 @@ class SummaryPanel {
 		this.tui.requestRender();
 	}
 
-	/** 選択コメント（all なら未要約の全コメント）を箇条書きに要約して差し込む。 */
-	private async summarizeComment(all: boolean): Promise<void> {
+	/** 選択コメント（all なら未要約の全コメント）の要約をバックグラウンドで開始する。 */
+	private summarizeComment(all: boolean): void {
 		const { summaries } = this.sources.store;
 		const targets = all
 			? this.cards.filter((card) => card.entryId && !summaries.has(card.entryId))
@@ -378,30 +386,13 @@ class SummaryPanel {
 			this.note = "要約済み（L で未要約をまとめて）";
 			return this.tui.requestRender();
 		}
-		const selectedId = this.content?.idAt(this.selected);
-		this.working = true;
-		try {
-			for (const [index, card] of targets.entries()) {
-				this.note = all ? `要約中 ${index + 1}/${targets.length}` : "要約中…";
-				this.tui.requestRender();
-				const text = await this.sources.comment(card.text);
-				if (this.closed) return;
-				summaries.set(card.entryId as string, text);
-				this.sources.save({ entryId: card.entryId as string, summary: text });
-			}
-			this.rebuild();
-			this.restoreSelection(selectedId);
-			this.note = `${targets.length} 件を要約`;
-		} catch (error) {
-			this.note = `要約に失敗: ${error instanceof Error ? error.message : String(error)}`;
-		} finally {
-			this.working = false;
-		}
+		this.note = all ? `未要約 ${targets.length} 件をバックグラウンドで要約` : "バックグラウンドで要約中…";
 		this.tui.requestRender();
+		this.sources.summarizeComments(targets.map((card) => ({ entryId: card.entryId as string, text: card.text })));
 	}
 
-	/** 選択コメントの直後の作業（all なら未要約の全箇所）を要約して差し込む。 */
-	private async summarizeWork(all: boolean): Promise<void> {
+	/** 選択コメントの直後の作業（all なら未要約の全箇所）の要約をバックグラウンドで開始する。 */
+	private summarizeWork(all: boolean): void {
 		const { works } = this.sources.store;
 		const targets = all
 			? this.cards.filter((card) => card.entryId && !works.has(card.entryId))
@@ -414,36 +405,11 @@ class SummaryPanel {
 			this.note = "作業は要約済み（I で未要約をまとめて）";
 			return this.tui.requestRender();
 		}
-		const selectedId = this.content?.idAt(this.selected);
-		this.working = true;
-		let done = 0;
-		try {
-			for (const [index, card] of targets.entries()) {
-				this.note = all ? `作業を要約中 ${index + 1}/${targets.length}` : "作業を要約中…";
-				this.tui.requestRender();
-				const text = await this.sources.work(card.entryId as string, this.nextId(card));
-				if (this.closed) return;
-				if (text) {
-					works.set(card.entryId as string, text);
-					this.sources.save({ entryId: card.entryId as string, work: text });
-					done++;
-				}
-			}
-			this.rebuild();
-			this.restoreSelection(selectedId);
-			this.note = done ? `${done} 件の作業を要約` : "直後のツール実行がありません";
-		} catch (error) {
-			this.note = `作業要約に失敗: ${error instanceof Error ? error.message : String(error)}`;
-		} finally {
-			this.working = false;
-		}
+		this.note = all ? `未要約 ${targets.length} 件の作業をバックグラウンドで要約` : "作業をバックグラウンドで要約中…";
 		this.tui.requestRender();
-	}
-
-	/** 要約で行が増えても、選択していたコメントに留める。 */
-	private restoreSelection(entryId: string | undefined): void {
-		const index = entryId ? this.cards.findIndex((card) => card.entryId === entryId) : -1;
-		if (index !== -1) this.selected = index;
+		this.sources.summarizeWorks(
+			targets.map((card) => ({ entryId: card.entryId as string, startId: card.entryId as string, endId: this.nextId(card) })),
+		);
 	}
 
 	private coverageHeader(width: number): string[] {
@@ -640,7 +606,12 @@ const runPrompt = async (prompt: { systemPrompt: string; user: string }, ctx: Ex
 const buildSources = (
 	ctx: ExtensionCommandContext,
 	save: (data: Saved) => void,
-	background: { refreshMin: (ctx: ExtensionContext) => Promise<void>; onMinUpdate: (callback: () => void) => () => void },
+	background: {
+		refreshMin: (ctx: ExtensionContext) => Promise<void>;
+		summarizeComments: (ctx: ExtensionContext, targets: { entryId: string; text: string }[]) => Promise<void>;
+		summarizeWorks: (ctx: ExtensionContext, targets: { entryId: string; startId: string; endId?: string }[]) => Promise<void>;
+		onStoreUpdate: (callback: () => void) => () => void;
+	},
 ): Sources => {
 	const branch = ctx.sessionManager.getBranch();
 	const turns = extractTurns(branch);
@@ -659,7 +630,9 @@ const buildSources = (
 		store,
 		save,
 		reloadStore,
-		onMinUpdate: background.onMinUpdate,
+		onStoreUpdate: background.onStoreUpdate,
+		summarizeComments: (targets) => void background.summarizeComments(ctx, targets),
+		summarizeWorks: (targets) => void background.summarizeWorks(ctx, targets),
 		async view(mode: Mode): Promise<View> {
 			if (mode === "rallies") {
 				const coverage = store.handoff ? computeCoverage(rallyCount, store.handoff, store.deferred) : undefined;
@@ -684,12 +657,6 @@ const buildSources = (
 			store.deferred = handoff.deferred;
 			save({ entryId: HANDOFF_ID, handoff: handoff.text, deferred: handoff.deferred });
 			return handoffView(handoff);
-		},
-		comment: (text: string) => runPrompt(buildCommentPrompt(text), ctx),
-		async work(startId: string, endId?: string): Promise<string | null> {
-			const items = extractWorkBetween(branch, startId, endId);
-			if (items.length === 0) return null;
-			return runPrompt(buildWorkPrompt(items), ctx);
 		},
 		adopt: async (item: DeferredItem) => parseAdopt(await runPrompt(buildAdoptPrompt(item, turns), ctx), item.summary),
 		edit: (text: string) => ctx.ui.editor("引き継ぎ書を編集", text),
@@ -731,8 +698,21 @@ const branchTo = async (entryId: string | undefined, ctx: ExtensionCommandContex
 
 export default function (pi: ExtensionAPI) {
 	let auto: AutoConfig = { ...DEFAULT_AUTO };
-	const minListeners = new Set<() => void>();
+	const storeListeners = new Set<() => void>();
+	const pendingSummaries = new Set<string>();
+	const pendingWorks = new Set<string>();
 	let minRunning = false;
+
+	const notifyStore = (): void => {
+		for (const callback of [...storeListeners]) callback();
+	};
+
+	const onStoreUpdate = (callback: () => void): (() => void) => {
+		storeListeners.add(callback);
+		return () => {
+			storeListeners.delete(callback);
+		};
+	};
 
 	const refreshMin = async (ctx: ExtensionContext): Promise<void> => {
 		if (minRunning) return;
@@ -744,7 +724,7 @@ export default function (pi: ExtensionAPI) {
 			if (rallyCount === 0) return;
 			const text = await runPrompt(buildMinPrompt(turns), ctx);
 			pi.appendEntry(STORE, { entryId: MIN_ID, min: text, minRallies: rallyCount });
-			for (const callback of [...minListeners]) callback();
+			notifyStore();
 			ctx.ui.notify("全体要約を更新しました", "info");
 		} catch (error) {
 			ctx.ui.notify(`全体要約に失敗: ${error instanceof Error ? error.message : String(error)}`, "error");
@@ -753,11 +733,53 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	const onMinUpdate = (callback: () => void): (() => void) => {
-		minListeners.add(callback);
-		return () => {
-			minListeners.delete(callback);
-		};
+	const summarizeComments = async (ctx: ExtensionContext, targets: { entryId: string; text: string }[]): Promise<void> => {
+		let done = 0;
+		let failed = 0;
+		for (const target of targets) {
+			if (pendingSummaries.has(target.entryId)) continue;
+			pendingSummaries.add(target.entryId);
+			try {
+				const text = await runPrompt(buildCommentPrompt(target.text), ctx);
+				pi.appendEntry(STORE, { entryId: target.entryId, summary: text });
+				notifyStore();
+				done++;
+			} catch {
+				failed++;
+			} finally {
+				pendingSummaries.delete(target.entryId);
+			}
+		}
+		if (failed && !done) ctx.ui.notify("コメント要約に失敗", "error");
+		else if (done) ctx.ui.notify(failed ? `${done} 件を要約（${failed} 件失敗）` : `${done} 件を要約`, failed ? "warning" : "info");
+	};
+
+	const summarizeWorks = async (ctx: ExtensionContext, targets: { entryId: string; startId: string; endId?: string }[]): Promise<void> => {
+		let done = 0;
+		let failed = 0;
+		let empty = 0;
+		for (const target of targets) {
+			if (pendingWorks.has(target.entryId)) continue;
+			pendingWorks.add(target.entryId);
+			try {
+				const items = extractWorkBetween(ctx.sessionManager.getBranch(), target.startId, target.endId);
+				if (items.length === 0) {
+					empty++;
+					continue;
+				}
+				const text = await runPrompt(buildWorkPrompt(items), ctx);
+				pi.appendEntry(STORE, { entryId: target.entryId, work: text });
+				notifyStore();
+				done++;
+			} catch {
+				failed++;
+			} finally {
+				pendingWorks.delete(target.entryId);
+			}
+		}
+		if (failed && !done) ctx.ui.notify("作業要約に失敗", "error");
+		else if (done) ctx.ui.notify(failed ? `${done} 件の作業を要約（${failed} 件失敗）` : `${done} 件の作業を要約`, failed ? "warning" : "info");
+		else if (empty) ctx.ui.notify("直後のツール実行がありません", "info");
 	};
 
 	pi.on("session_start", (_event, ctx) => {
@@ -783,7 +805,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("会話ラリーがありません", "warning");
 				return;
 			}
-			const sources = buildSources(ctx, (data) => pi.appendEntry(STORE, data), { refreshMin, onMinUpdate });
+			const sources = buildSources(ctx, (data) => pi.appendEntry(STORE, data), { refreshMin, summarizeComments, summarizeWorks, onStoreUpdate });
 			if (ctx.mode !== "tui") {
 				process.stdout.write(`${cardsText((await sources.view("rallies")).cards)}\n`);
 				return;

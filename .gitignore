@@ -12,8 +12,9 @@
 !package.json
 !package-lock.json
 !packages/pi-answer/**
+!packages/pi-autocommit/**
 !packages/pi-byetheway/**
-!packages/pi-herdr-fleet/**
+!packages/pi-summary/**
 
 # 何があっても追跡しないもの（許可ツリーの中でも効かせるため、! より下に置く）
 node_modules/

@@ -279,6 +279,15 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args, ctx) => open(ctx),
 	});
 
+	pi.registerCommand("timeline-reset", {
+		description: "Clear the task plan and remove the timeline footer line",
+		handler: async (_args, ctx) => {
+			tasks = [];
+			save(ctx);
+			if (ctx.hasUI) ctx.ui.notify("timeline を消去しました", "info");
+		},
+	});
+
 	pi.registerShortcut("alt+t", {
 		description: "Show the task timeline",
 		handler: async (ctx) => open(ctx),

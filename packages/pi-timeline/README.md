@@ -39,6 +39,8 @@ The model publishes the plan with one tool, **replacing the whole list** on ever
 
 The plan is stored with `pi.appendEntry("pi-timeline", ...)` in the session JSONL, and restored from the latest entry on the current branch after a resume, a fork or `/reload`.
 
+`/timeline-reset` clears the plan and the footer line by hand (it persists the empty state, so it is not restored).
+
 ## Keys
 
 | Key | Action |

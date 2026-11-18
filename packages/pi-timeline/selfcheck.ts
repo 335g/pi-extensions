@@ -103,6 +103,7 @@ extension(pi);
 
 assert.ok(tools.has("timeline"), "timeline tool registered");
 assert.ok(commands.has("timeline"), "/timeline command registered");
+assert.ok(commands.has("timeline-reset"), "/timeline-reset command registered");
 assert.ok(shortcuts.has("alt+t"), "alt+t shortcut registered");
 assert.ok(handlers.has("session_start"), "session_start handler registered");
 
@@ -149,6 +150,11 @@ footer.dispose();
 footerFactory = undefined;
 await fire("session_start");
 assert.ok(footerFactory, "state restored from the session branch");
+
+// /timeline-reset で計画と footer を手動で消去し、空を永続化する
+await commands.get("timeline-reset")?.("", ctx);
+assert.equal(footerFactory, undefined, "reset clears the footer");
+assert.deepEqual((entries.at(-1) as any).data.tasks, [], "reset persists an empty plan");
 
 // 全画面: ヘッダ・子タスクのインデント・ノート・スクロール
 await tool.execute(

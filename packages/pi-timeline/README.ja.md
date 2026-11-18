@@ -41,6 +41,8 @@ pi install @335g/pi-timeline
 
 計画は `pi.appendEntry("pi-timeline", ...)` でセッションの JSONL に保存する。セッション再開・分岐・`/reload` で復元する（ブランチ上の最新を使う）。
 
+`/timeline-reset` で計画と footer の行を手動で消去する（空の状態を保存するので復元されない）。
+
 ## キー
 
 | キー | 動作 |

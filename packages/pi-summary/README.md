@@ -37,6 +37,15 @@ pi install git:github.com/335g/pi-extensions
 
 反映は `/reload`。
 
+## コマンド
+
+| コマンド | 動作 |
+|---|---|
+| `/summary` | 会話パネルを開く |
+| `/summary-comments` | 未要約の全コメントをバックグラウンドで要約 |
+| `/summary-works` | 未要約の全作業をバックグラウンドで要約 |
+| `/summary-overall` | セッション全体をバックグラウンドで要約（`m` 相当） |
+
 ## 使い方
 
 セッション中に `/summary` を打つ。開いたパネルのまま操作する。

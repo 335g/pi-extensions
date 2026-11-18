@@ -10,13 +10,15 @@ export interface Task {
 	status: Status;
 	parent?: string;
 	note?: string;
+	/** 完了時に残す結論。`/timeline` でタスクの後ろに表示する。 */
+	result?: string;
 	/** epoch ms。active になった時刻。 */
 	startedAt?: number;
 	/** epoch ms。done になった時刻。 */
 	endedAt?: number;
 }
 
-export type TaskInput = { id: string; title: string; status?: Status; parent?: string; note?: string };
+export type TaskInput = { id: string; title: string; status?: Status; parent?: string; note?: string; result?: string };
 
 export interface Line {
 	id: string;
@@ -25,6 +27,7 @@ export interface Line {
 	title: string;
 	duration?: string;
 	note?: string;
+	result?: string;
 }
 
 const GLYPHS: Record<Status, string> = { done: "✓", active: "▶", pending: "·", blocked: "!" };
@@ -53,6 +56,9 @@ export function merge(prev: readonly Task[], input: readonly TaskInput[], now: n
 		const task: Task = { id, title, status };
 		if (raw.parent && raw.parent !== id) task.parent = raw.parent;
 		if (raw.note) task.note = raw.note;
+		// 結論は完了時に付く。再送時に消えないよう前回値を引き継ぐ。
+		const result = raw.result ?? old?.result;
+		if (result) task.result = result;
 		// active / done だけが時間を持つ。blocked や pending に戻したら計測を止める。
 		const startedAt = status === "active" || status === "done" ? (old?.startedAt ?? now) : undefined;
 		if (startedAt !== undefined) task.startedAt = startedAt;
@@ -108,6 +114,7 @@ export function lines(tasks: readonly Task[], now: number): Line[] {
 			title: t.title,
 			duration: ms === undefined ? undefined : fmtDuration(ms),
 			note: t.note,
+			result: t.result,
 		};
 	};
 	const visit = (parent: string | undefined, depth: number): void => {

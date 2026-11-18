@@ -86,6 +86,14 @@ test("merge keeps a new task's parent that was not re-sent", () => {
 	assert.equal(second[1].parent, "1");
 });
 
+test("merge carries a result across updates", () => {
+	const done = merge([], [{ id: "1", title: "a", status: "done", result: "fixed" }], 0);
+	assert.equal(done[0].result, "fixed");
+
+	const updated = merge(done, [{ id: "1", title: "a", status: "done" }], 1000);
+	assert.equal(updated[0].result, "fixed", "result survives an update without re-sending it");
+});
+
 test("lines puts children under their parent, depth first", () => {
 	const tasks = merge([], [
 		{ id: "1", title: "root" },
